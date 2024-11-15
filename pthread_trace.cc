@@ -45,7 +45,7 @@ enum class wire_type {
 // but we just don't have that much nesting in this case.
 template <size_t Capacity>
 class buffer {
-  std::array<char, Capacity> buf_;
+  std::array<uint8_t, Capacity> buf_;
   size_t size_ = 0;
 
   // varint is 7 bits at a time, with the MSB indicating if there is another 7
@@ -65,12 +65,21 @@ class buffer {
   // value));
   //}
 
+  constexpr buffer(uint8_t d0, uint8_t d1) : buf_({{d0, d1}}), size_(2) {}
+
 public:
+  constexpr buffer() : size_(0) {}
+
   static constexpr size_t capacity() { return Capacity; }
+
+  static constexpr buffer<2> make(uint8_t tag, uint8_t value) {
+    uint8_t tag_type = static_cast<uint8_t>(tag << 3) | static_cast<uint8_t>(wire_type::varint);
+    return buffer<2>(tag_type, value);
+  }
 
   size_t size() const { return size_; }
   bool empty() const { return size_ == 0; }
-  const char* data() const { return buf_.data(); }
+  const uint8_t* data() const { return buf_.data(); }
   void clear() { size_ = 0; }
 
   // Write objects directly to the buffer, without any tags.
@@ -221,6 +230,21 @@ enum class TracePacket {
   /*optional uint32*/ sequence_flags = 13,
 };
 
+auto trusted_packet_sequence_id =
+    proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
+
+auto sequence_flags_cleared = proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::sequence_flags),
+    static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED));
+auto sequence_flags = proto::buffer<2>::make(
+    static_cast<uint64_t>(TracePacket::sequence_flags), static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
+
+auto slice_begin =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::SLICE_BEGIN));
+auto slice_end =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::SLICE_END));
+auto instant =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::INSTANT));
+
 }  // namespace perfetto
 
 using namespace perfetto;
@@ -279,8 +303,7 @@ public:
     proto::buffer<8> uuid;
     uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), id);
 
-    proto::buffer<8> parent_uuid;
-    parent_uuid.write(static_cast<uint64_t>(TrackDescriptor::parent_uuid), root_track_uuid);
+    auto parent_uuid = proto::buffer<2>::make(static_cast<uint64_t>(TrackDescriptor::parent_uuid), root_track_uuid);
 
     // Use the thread id as the thread name, pad it so it sorts alphabetically in numerical order.
     // TODO: Use real thread names?
@@ -292,9 +315,6 @@ public:
 
     proto::buffer<256> track_descriptor;
     track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, parent_uuid, name);
-
-    proto::buffer<4> trusted_packet_sequence_id;
-    trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
 
     proto::buffer<4096> trace_packet;
     trace_packet.write(1, track_descriptor, trusted_packet_sequence_id);
@@ -324,31 +344,20 @@ public:
 
 thread_local thread_state thread;
 
-void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEGIN) {
+void write_trace_begin(trace_type e, const proto::buffer<2>& event_type = slice_begin) {
   auto t = std::chrono::high_resolution_clock::now();
   auto ts = std::chrono::duration_cast<std::chrono::nanoseconds>(t - t0_).count();
 
   proto::buffer<8> track_uuid;
   track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), thread.get_id());
 
-  proto::buffer<4> type;
-  type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(event_type));
-
-  proto::buffer<4> name_buf;
-  name_buf.write(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(e));
+  auto name_buf = proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(e));
 
   proto::buffer<8> track_event;
-  track_event.write(static_cast<uint64_t>(TracePacket::track_event), name_buf, type, track_uuid);
+  track_event.write(static_cast<uint64_t>(TracePacket::track_event), name_buf, event_type, track_uuid);
 
   proto::buffer<16> timestamp;
   timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), ts);
-
-  proto::buffer<4> trusted_packet_sequence_id;
-  trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
-
-  proto::buffer<4> sequence_flags;
-  sequence_flags.write(static_cast<uint64_t>(TracePacket::sequence_flags),
-      static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
 
   proto::buffer<32> trace_packet;
   trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
@@ -356,7 +365,7 @@ void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEG
   thread.write(trace_packet);
 }
 
-void write_trace_event(trace_type e) { write_trace_begin(e, EventType::INSTANT); }
+void write_trace_event(trace_type e) { write_trace_begin(e, instant); }
 
 void write_trace_end() {
   auto t = std::chrono::high_resolution_clock::now();
@@ -365,21 +374,11 @@ void write_trace_end() {
   proto::buffer<8> track_uuid;
   track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), thread.get_id());
 
-  proto::buffer<4> type;
-  type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::SLICE_END));
-
   proto::buffer<8> track_event;
-  track_event.write(static_cast<uint64_t>(TracePacket::track_event), type, track_uuid);
+  track_event.write(static_cast<uint64_t>(TracePacket::track_event), slice_end, track_uuid);
 
   proto::buffer<16> timestamp;
   timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), ts);
-
-  proto::buffer<4> trusted_packet_sequence_id;
-  trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
-
-  proto::buffer<4> sequence_flags;
-  sequence_flags.write(static_cast<uint64_t>(TracePacket::sequence_flags),
-      static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
 
   proto::buffer<32> trace_packet;
   trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
@@ -388,8 +387,7 @@ void write_trace_end() {
 }
 
 void write_trace_header() {
-  proto::buffer<8> uuid;
-  uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), root_track_uuid);
+  auto uuid = proto::buffer<2>::make(static_cast<uint8_t>(TrackDescriptor::uuid), root_track_uuid);
 
   proto::buffer<8> track_descriptor;
   track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid);
@@ -404,15 +402,8 @@ void write_trace_header() {
   proto::buffer<4096> interned_data;
   interned_data.write(static_cast<uint64_t>(TracePacket::interned_data), event_names);
 
-  proto::buffer<4> trusted_packet_sequence_id;
-  trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
-
-  proto::buffer<4> sequence_flags;
-  sequence_flags.write(static_cast<uint64_t>(TracePacket::sequence_flags),
-      static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED));
-
   proto::buffer<4096> trace_packet;
-  trace_packet.write(1, track_descriptor, interned_data, trusted_packet_sequence_id, sequence_flags);
+  trace_packet.write(1, track_descriptor, interned_data, trusted_packet_sequence_id, sequence_flags_cleared);
 
   ssize_t written = write(fd.load(), trace_packet.data(), trace_packet.size());
   (void)written;
