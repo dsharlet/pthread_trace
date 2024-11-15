@@ -253,6 +253,8 @@ auto slice_end =
 auto instant =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::INSTANT));
 
+constexpr uint64_t trace_packet_tag = 1;
+
 }  // namespace perfetto
 
 using namespace perfetto;
@@ -348,7 +350,7 @@ public:
     track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, parent_uuid, name);
 
     proto::buffer<4096> trace_packet;
-    trace_packet.write(1, track_descriptor, trusted_packet_sequence_id);
+    trace_packet.write(trace_packet_tag, track_descriptor, trusted_packet_sequence_id);
 
     write(trace_packet);
   }
@@ -386,7 +388,7 @@ void write_trace_begin(const proto::buffer<2>& event_name, const proto::buffer<2
   track_event.write(static_cast<uint64_t>(TracePacket::track_event), event_name, event_type, thread.get_track_uuid());
 
   proto::buffer<32> trace_packet;
-  trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
+  trace_packet.write(trace_packet_tag, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
 
   thread.write(trace_packet);
 }
@@ -404,7 +406,7 @@ void write_trace_end() {
   track_event.write(static_cast<uint64_t>(TracePacket::track_event), slice_end, thread.get_track_uuid());
 
   proto::buffer<32> trace_packet;
-  trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
+  trace_packet.write(trace_packet_tag, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
 
   thread.write(trace_packet);
 }
@@ -426,7 +428,7 @@ void write_trace_header() {
   interned_data.write(static_cast<uint64_t>(TracePacket::interned_data), event_names);
 
   proto::buffer<4096> trace_packet;
-  trace_packet.write(1, track_descriptor, interned_data, trusted_packet_sequence_id, sequence_flags_cleared);
+  trace_packet.write(trace_packet_tag, track_descriptor, interned_data, trusted_packet_sequence_id, sequence_flags_cleared);
 
   ssize_t written = write(fd.load(), trace_packet.data(), trace_packet.size());
   (void)written;
