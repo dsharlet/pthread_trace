@@ -449,9 +449,12 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
       exit(1);
     }
   }
+  // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
+  write_trace_end();
   write_trace_begin(trace_type::cond_timedwait);
   int result = hook(cond, mutex, abstime);
   write_trace_end();
+  write_trace_begin(trace_type::mutex_locked);
   return result;
 }
 
@@ -466,9 +469,12 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
       exit(1);
     }
   }
+  // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
+  write_trace_end();
   write_trace_begin(trace_type::cond_wait);
   int result = hook(cond, mutex);
   write_trace_end();
+  write_trace_begin(trace_type::mutex_locked);
   return result;
 }
 
