@@ -19,10 +19,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <map>
 #include <mutex>
 #include <thread>
-#include <vector>
 
 namespace {
 
@@ -330,10 +328,10 @@ void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEG
   proto::buffer<4> type;
   type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(event_type));
 
-  proto::buffer<256> name_buf;
+  proto::buffer<4> name_buf;
   name_buf.write(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(e));
 
-  proto::buffer<256> track_event;
+  proto::buffer<8> track_event;
   track_event.write(static_cast<uint64_t>(TracePacket::track_event), name_buf, type, track_uuid);
 
   proto::buffer<16> timestamp;
@@ -346,7 +344,7 @@ void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEG
   sequence_flags.write(static_cast<uint64_t>(TracePacket::sequence_flags),
       static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
 
-  proto::buffer<256> trace_packet;
+  proto::buffer<32> trace_packet;
   trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
 
   thread.write(trace_packet);
@@ -364,7 +362,7 @@ void write_trace_end() {
   proto::buffer<4> type;
   type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::SLICE_END));
 
-  proto::buffer<256> track_event;
+  proto::buffer<8> track_event;
   track_event.write(static_cast<uint64_t>(TracePacket::track_event), type, track_uuid);
 
   proto::buffer<16> timestamp;
@@ -377,7 +375,7 @@ void write_trace_end() {
   sequence_flags.write(static_cast<uint64_t>(TracePacket::sequence_flags),
       static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
 
-  proto::buffer<256> trace_packet;
+  proto::buffer<32> trace_packet;
   trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
 
   thread.write(trace_packet);
