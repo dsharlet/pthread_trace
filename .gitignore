@@ -1,0 +1,51 @@
+# Output directories
+bazel-*
+
+*.lock
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Emacs droppings
+*~
+
+# Visual Studio folder status
+.vs
+.vscode
+
+# Mac nonsense
+.DS_Store
+
+# perf outputs
+perf.data*
+
+# Tracing outputs
+*.json
+*.proto
+
+# Local helper scripts used by some contributors
+run-clang-format.sh
+run-clang-tidy.sh
