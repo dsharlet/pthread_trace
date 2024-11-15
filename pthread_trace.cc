@@ -24,6 +24,12 @@
 
 namespace {
 
+size_t sum() { return 0; }
+template <class... Args>
+size_t sum(size_t a, Args... args) {
+  return a + sum(args...);
+}
+
 namespace proto {
 
 enum class wire_type {
@@ -32,12 +38,6 @@ enum class wire_type {
   len = 2,
   i32 = 5,
 };
-
-size_t sum() { return 0; }
-template <class... Args>
-size_t sum(size_t a, Args... args) {
-  return a + sum(args...);
-}
 
 // Writing protobufs is a bit tricky, because you need to know the size of child messages before writing the parent
 // message header. The approach used here is to use fixed size stack buffers for everything, and just copy them into
@@ -124,6 +124,8 @@ public:
 };
 
 }  // namespace proto
+
+namespace perfetto {
 
 // These protobuf messages are for 'perfetto', excerpted from
 // https://cs.android.com/android/platform/superproject/main/+/main:external/perfetto/protos/perfetto/trace/trace_packet.proto
@@ -219,6 +221,10 @@ enum class TracePacket {
   /*optional uint32*/ sequence_flags = 13,
 };
 
+}  // namespace perfetto
+
+using namespace perfetto;
+
 // The trace events we support.
 enum class trace_type {
   none = 0,
@@ -258,7 +264,7 @@ std::atomic<int> next_thread_id = 0;
 
 constexpr uint64_t root_track_uuid = 0;
 
-class thread_info {
+class thread_state {
   int id;
 
   // To minimize contention while writing to the file, we accumulate messages in this local buffer, and
@@ -266,7 +272,7 @@ class thread_info {
   proto::buffer<4096> buffer;
 
 public:
-  thread_info() {
+  thread_state() {
     id = next_thread_id++;
 
     // Write the thread descriptor once.
@@ -295,7 +301,7 @@ public:
 
     write(trace_packet);
   }
-  ~thread_info() {
+  ~thread_state() {
     if (!buffer.empty()) {
       ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
       (void)result;
@@ -316,7 +322,7 @@ public:
   }
 };
 
-thread_local thread_info thread;
+thread_local thread_state thread;
 
 void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEGIN) {
   auto t = std::chrono::high_resolution_clock::now();
