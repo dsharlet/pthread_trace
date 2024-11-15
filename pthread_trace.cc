@@ -96,6 +96,14 @@ public:
     write(buf.data(), buf.size());
   }
 
+  void write(const buffer<2>& buf) {
+    assert(buf.size() == 2);
+    assert(size_ + 2 < Capacity);
+    buf_[size_ + 0] = buf.data()[0];
+    buf_[size_ + 1] = buf.data()[1];
+    size_ += 2;
+  }
+
   template <size_t N, typename... Fields>
   void write(const buffer<N>& first, const Fields&... rest) {
     write(first);
