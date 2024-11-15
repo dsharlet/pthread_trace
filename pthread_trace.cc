@@ -35,6 +35,12 @@ enum class wire_type {
   i32 = 5,
 };
 
+size_t sum() { return 0; }
+template <class... Args>
+size_t sum(size_t a, Args... args) {
+  return a + sum(args...);
+}
+
 // Writing protobufs is a bit tricky, because you need to know the size of child messages before writing the parent
 // message header. The approach used here is to use fixed size stack buffers for everything, and just copy them into
 // nested buffers after constructing them (so we know the size). This approach would be bad for deeply nested protos,
@@ -69,46 +75,53 @@ public:
   const char* data() const { return buf_.data(); }
   void clear() { size_ = 0; }
 
+  // Write objects directly to the buffer, without any tags.
   void write(const void* s, size_t n) {
     assert(size_ + n <= Capacity);
     std::memcpy(&buf_[size_], s, n);
     size_ += n;
   }
 
+  void write() {}
+
   template <size_t M>
   void write(const buffer<M>& buf) {
     write(buf.data(), buf.size());
   }
 
-  void write_tag(uint64_t field_number, wire_type type) {
-    write_varint((field_number << 3) | static_cast<uint64_t>(type));
+  template <size_t N, typename... Fields>
+  void write(const buffer<N>& first, const Fields&... rest) {
+    write(first);
+    write(rest...);
   }
 
-  void write_len_tag(uint64_t field_number, uint64_t len) {
-    write_tag(field_number, wire_type::len);
-    write_varint(len);
-  }
+  // Write a tag.
+  void write_tag(uint64_t tag, wire_type type) { write_varint((tag << 3) | static_cast<uint64_t>(type)); }
 
-  void write(uint64_t field_number, uint64_t value) {
-    write_tag(field_number, wire_type::varint);
+  // Write tagged values.
+  void write(uint64_t tag, uint64_t value) {
+    write_tag(tag, wire_type::varint);
     write_varint(value);
   }
 
-  template <size_t M>
-  void write(uint64_t field_number, const buffer<M>& field) {
-    write_len_tag(field_number, field.size());
-    write(field.data(), field.size());
-  }
-
-  // void write(uint64_t field_number, int64_t value) {
-  //   write_tag(field_number, wire_type::varint);
+  // void write(uint64_t tag, int64_t value) {
+  //   write_tag(tag, wire_type::varint);
   //   write_varint(value);
   // }
 
-  void write(uint64_t field_number, const char* str) {
+  void write(uint64_t tag, const char* str) {
     std::size_t len = strlen(str);
-    write_len_tag(field_number, len);
+    write_tag(tag, wire_type::len);
+    write_varint(len);
     write(str, len);
+  }
+
+  template <size_t N, typename... Fields>
+  void write(uint64_t tag, const buffer<N>& first, const Fields&... rest) {
+    write_tag(tag, wire_type::len);
+    write_varint(first.size() + sum(rest.size()...));
+    write(first);
+    write(rest...);
   }
 };
 
@@ -244,15 +257,16 @@ public:
     proto::buffer<8> parent_uuid;
     parent_uuid.write(static_cast<uint64_t>(TrackDescriptor::parent_uuid), root_track_uuid);
 
+    // Use the thread id as the thread name, pad it so it sorts alphabetically in numerical order.
+    // TODO: Use real thread names?
+    std::string thread_name = std::to_string(id);
+    thread_name = std::string(4 - thread_name.size(), '0') + thread_name;
+
     proto::buffer<256> name;
-    name.write(static_cast<uint64_t>(TrackDescriptor::name), std::to_string(id).c_str());
+    name.write(static_cast<uint64_t>(TrackDescriptor::name), thread_name.c_str());
 
     proto::buffer<256> track_descriptor;
-    track_descriptor.write_len_tag(
-        static_cast<uint64_t>(TracePacket::track_descriptor), uuid.size() + parent_uuid.size() + name.size());
-    track_descriptor.write(uuid);
-    track_descriptor.write(parent_uuid);
-    track_descriptor.write(name);
+    track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, parent_uuid, name);
 
     proto::buffer<256> trace_packet;
     trace_packet.write(1, track_descriptor);
@@ -296,11 +310,7 @@ void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEG
   name_buf.write(static_cast<uint64_t>(TrackEvent::name), to_string(e));
 
   proto::buffer<256> track_event;
-  track_event.write_len_tag(
-      static_cast<uint64_t>(TracePacket::track_event), name_buf.size() + type.size() + track_uuid.size());
-  track_event.write(name_buf);
-  track_event.write(type);
-  track_event.write(track_uuid);
+  track_event.write(static_cast<uint64_t>(TracePacket::track_event), name_buf, type, track_uuid);
 
   proto::buffer<16> timestamp;
   timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), ts);
@@ -309,10 +319,7 @@ void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEG
   trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
 
   proto::buffer<256> trace_packet;
-  trace_packet.write_len_tag(1, track_event.size() + trusted_packet_sequence_id.size() + timestamp.size());
-  trace_packet.write(timestamp);
-  trace_packet.write(track_event);
-  trace_packet.write(trusted_packet_sequence_id);
+  trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id);
 
   thread.write(trace_packet);
 }
@@ -330,9 +337,7 @@ void write_trace_end() {
   type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::SLICE_END));
 
   proto::buffer<256> track_event;
-  track_event.write_len_tag(static_cast<uint64_t>(TracePacket::track_event), type.size() + track_uuid.size());
-  track_event.write(type);
-  track_event.write(track_uuid);
+  track_event.write(static_cast<uint64_t>(TracePacket::track_event), type, track_uuid);
 
   proto::buffer<16> timestamp;
   timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), ts);
@@ -341,10 +346,7 @@ void write_trace_end() {
   trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
 
   proto::buffer<256> trace_packet;
-  trace_packet.write_len_tag(1, track_event.size() + trusted_packet_sequence_id.size() + timestamp.size());
-  trace_packet.write(timestamp);
-  trace_packet.write(track_event);
-  trace_packet.write(trusted_packet_sequence_id);
+  trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id);
 
   thread.write(trace_packet);
 }
