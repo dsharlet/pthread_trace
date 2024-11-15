@@ -251,8 +251,8 @@ const char* to_string(trace_type t) {
   case trace_type::mutex_trylock: return "mutex_trylock";
   case trace_type::mutex_unlock: return "mutex_unlock";
   case trace_type::mutex_locked: return "mutex_locked";
-  default: assert(false);
   }
+  return nullptr;
 }
 
 std::atomic<bool> initialized = false;

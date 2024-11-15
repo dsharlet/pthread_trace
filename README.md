@@ -3,7 +3,7 @@ This tool allows capturing pthread events into a [perfetto](https://perfetto.dev
 
 To use it, compile the tool to a shared library:
 ```
-c++ -shared -fPIC -ldl -O2 -std=c++14 pthread_trace.cc -o pthread_trace.so
+c++ -shared -fPIC -ldl -O2 -DNDEBUG -std=c++14 pthread_trace.cc -o pthread_trace.so
 ```
 
 Then, run your program with `pthread_trace.so` as an LD_PRELOAD:
