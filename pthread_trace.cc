@@ -294,6 +294,8 @@ const char* to_string(pthread_event_type t) {
   case pthread_event_type::mutex_trylock: return "mutex_trylock";
   case pthread_event_type::mutex_unlock: return "mutex_unlock";
   case pthread_event_type::mutex_locked: return "mutex_locked";
+  case pthread_event_type::none:
+  case pthread_event_type::count: break;
   }
   return nullptr;
 }
