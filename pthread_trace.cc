@@ -7,7 +7,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -20,7 +19,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <iostream>
 #include <map>
 #include <mutex>
 #include <thread>
