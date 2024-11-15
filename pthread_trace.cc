@@ -597,7 +597,10 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
       exit(1);
     }
   }
+  write_track_event(slice_begin, event_mutex_unlock);
+  int result = hook(mutex);
   write_track_event(slice_end);
-  return hook(mutex);
+  write_track_event(slice_end);
+  return result;
 }
 }
