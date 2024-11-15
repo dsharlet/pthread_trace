@@ -271,27 +271,30 @@ enum class pthread_event_type {
   mutex_trylock,
   mutex_unlock,
   mutex_locked,
+  once,
   count,
 };
 
 auto event_cond_broadcast = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_broadcast));
-auto event_cond_signal =
-    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_signal));
+auto event_cond_signal = proto::buffer<2>::make(
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_signal));
 auto event_cond_timedwait = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_timedwait));
-auto event_cond_wait =
-    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_wait));
-auto event_join =
-    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::join));
-auto event_mutex_lock =
-    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_lock));
+auto event_cond_wait = proto::buffer<2>::make(
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_wait));
+auto event_join = proto::buffer<2>::make(
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::join));
+auto event_mutex_lock = proto::buffer<2>::make(
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_lock));
 auto event_mutex_trylock = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_trylock));
 auto event_mutex_unlock = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_unlock));
 auto event_mutex_locked = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_locked));
+auto event_once = proto::buffer<2>::make(
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::once));
 
 const char* to_string(pthread_event_type t) {
   switch (t) {
@@ -304,6 +307,7 @@ const char* to_string(pthread_event_type t) {
   case pthread_event_type::mutex_trylock: return "mutex_trylock";
   case pthread_event_type::mutex_unlock: return "mutex_unlock";
   case pthread_event_type::mutex_locked: return "mutex_locked";
+  case pthread_event_type::once: return "once";
   case pthread_event_type::none:
   case pthread_event_type::count: break;
   }
@@ -313,11 +317,14 @@ const char* to_string(pthread_event_type t) {
 std::atomic<bool> initialized = false;
 std::atomic<int> fd = -1;
 
-auto t0_ = std::chrono::high_resolution_clock::now();
-
 std::atomic<int> next_thread_id = 0;
 
 constexpr uint64_t root_track_uuid = 0;
+
+auto get_start_time() {
+  static auto t0 = std::chrono::high_resolution_clock::now();
+  return t0;
+}
 
 class thread_state {
   proto::buffer<8> track_uuid;
@@ -325,6 +332,9 @@ class thread_state {
   // To minimize contention while writing to the file, we accumulate messages in this local buffer, and
   // flush it to the file when its full.
   proto::buffer<1024 * 64> buffer;
+
+  // The previous timestamp emitted on this thread.
+  std::chrono::time_point<std::chrono::high_resolution_clock> t0 = get_start_time();
 
 public:
   thread_state() {
@@ -363,6 +373,11 @@ public:
 
   const proto::buffer<8>& get_track_uuid() const { return track_uuid; }
 
+  uint64_t local_timestamp() {
+    auto now = std::chrono::high_resolution_clock::now();
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count();
+  }
+
   template <size_t N>
   void write(const proto::buffer<N>& message) {
     if (message.size() + buffer.size() > buffer.capacity()) {
@@ -379,11 +394,8 @@ thread_local thread_state thread;
 
 template <typename... TrackEventFields>
 void write_track_event(const TrackEventFields&... fields) {
-  auto t = std::chrono::high_resolution_clock::now();
-  auto ts = std::chrono::duration_cast<std::chrono::nanoseconds>(t - t0_).count();
-
   proto::buffer<16> timestamp;
-  timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), ts);
+  timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), thread.local_timestamp());
 
   proto::buffer<8> track_event;
   track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., thread.get_track_uuid());
@@ -411,7 +423,8 @@ void write_trace_header() {
   interned_data.write(static_cast<uint64_t>(TracePacket::interned_data), event_names);
 
   proto::buffer<4096> trace_packet;
-  trace_packet.write(trace_packet_tag, track_descriptor, interned_data, trusted_packet_sequence_id, sequence_flags_cleared);
+  trace_packet.write(
+      trace_packet_tag, track_descriptor, interned_data, trusted_packet_sequence_id, sequence_flags_cleared);
 
   ssize_t written = write(fd.load(), trace_packet.data(), trace_packet.size());
   (void)written;
@@ -603,4 +616,22 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   write_track_event(slice_end);
   return result;
 }
+
+int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
+  typedef int (*hook_t)(pthread_once_t*, void (*)());
+  static hook_t hook = nullptr;
+  if (!hook) {
+    trace_init();
+    hook = (hook_t)dlsym(RTLD_NEXT, "pthread_once");
+    if (!hook) {
+      fprintf(stderr, "Failed to find pthread_once\n");
+      exit(1);
+    }
+  }
+  write_track_event(slice_begin, event_once);
+  int result = hook(once_control, init_routine);
+  write_track_event(slice_end);
+  return result;
 }
+
+}  // extern "C"
