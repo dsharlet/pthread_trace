@@ -21,6 +21,11 @@ This tool captures the following information:
 - Time threads hold a mutex (i.e. time between `pthread_mutex_lock`/successful `pthread_mutex_trylock` and `pthread_mutex_unlock`)
 - `pthread_cond_broadcast` and `pthread_cond_signal` events
 
+### Examples
+
+![Example trace](example.png)
+![Example zoomed](zoomed_example.png)
+
 ## Performance impact
 This tool is designed to have as minimal impact on performance as possible.
 However, even very lightweight tracing will be significant compared to uncontended thread synchronization primitives.
