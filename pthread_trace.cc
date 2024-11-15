@@ -324,7 +324,7 @@ class thread_state {
 
   // To minimize contention while writing to the file, we accumulate messages in this local buffer, and
   // flush it to the file when its full.
-  proto::buffer<4096> buffer;
+  proto::buffer<1024 * 64> buffer;
 
 public:
   thread_state() {
