@@ -63,6 +63,7 @@ public:
   static constexpr size_t capacity() { return Capacity; }
 
   size_t size() const { return size_; }
+  bool empty() const { return size_ == 0; }
   const char* data() const { return buf_.data(); }
   void clear() { size_ = 0; }
 
@@ -111,6 +112,8 @@ public:
 
 }  // namespace proto
 
+// These protobuf messages are for 'perfetto', excerpted from
+// https://cs.android.com/android/platform/superproject/main/+/main:external/perfetto/protos/perfetto/trace/trace_packet.proto
 enum class TrackDescriptor {
   /*optional uint64*/ uuid = 1,
   /*optional uint64*/ parent_uuid = 5,
@@ -129,11 +132,11 @@ enum class ThreadDescriptor {
 };
 
 enum class EventType {
-  TYPE_UNSPECIFIED = 0,
-  TYPE_SLICE_BEGIN = 1,
-  TYPE_SLICE_END = 2,
-  TYPE_INSTANT = 3,
-  TYPE_COUNTER = 4,
+  UNSPECIFIED = 0,
+  SLICE_BEGIN = 1,
+  SLICE_END = 2,
+  INSTANT = 3,
+  COUNTER = 4,
 };
 
 enum class TrackEvent {
@@ -184,6 +187,7 @@ enum class TracePacket {
   /*uint32*/ trusted_packet_sequence_id = 10,
 };
 
+// The trace events we support.
 enum class trace_type {
   cond_broadcast,
   cond_signal,
@@ -213,16 +217,23 @@ const char* to_string(trace_type t) {
 
 std::atomic<bool> initialized = false;
 std::atomic<int> fd = -1;
+std::atomic<size_t> file_offset = 0;
 
 auto t0_ = std::chrono::high_resolution_clock::now();
 
 std::atomic<int> next_thread_id = 0;
 
-class per_thread_data {
+constexpr uint64_t root_track_uuid = 0;
+
+class thread_info {
   int id;
 
+  // To minimize contention while writing to the file, we accumulate messages in this local buffer, and
+  // flush it to the file when its full.
+  proto::buffer<4096> buffer;
+
 public:
-  per_thread_data() {
+  thread_info() {
     id = next_thread_id++;
 
     // Write the thread descriptor once.
@@ -230,7 +241,7 @@ public:
     uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), id);
 
     proto::buffer<8> parent_uuid;
-    parent_uuid.write(static_cast<uint64_t>(TrackDescriptor::parent_uuid), (uint64_t)0);
+    parent_uuid.write(static_cast<uint64_t>(TrackDescriptor::parent_uuid), root_track_uuid);
 
     proto::buffer<256> name;
     name.write(static_cast<uint64_t>(TrackDescriptor::name), std::to_string(id).c_str());
@@ -245,24 +256,40 @@ public:
     proto::buffer<256> trace_packet;
     trace_packet.write(1, track_descriptor);
 
-    ssize_t result = write(fd.load(), trace_packet.data(), trace_packet.size());
-    (void)result;
+    write(trace_packet);
+  }
+  ~thread_info() {
+    if (!buffer.empty()) {
+      ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
+      (void)result;
+    }
   }
 
   int get_id() const { return id; }
+
+  template <size_t N>
+  void write(const proto::buffer<N>& message) {
+    if (message.size() + buffer.size() > buffer.capacity()) {
+      // Our buffer is full, flush it.
+      ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
+      (void)result;
+      buffer.clear();
+    }
+    buffer.write(message);
+  }
 };
 
-thread_local per_thread_data per_thread;
+thread_local thread_info thread;
 
-void write_trace_begin(trace_type e) {
+void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEGIN) {
   auto t = std::chrono::high_resolution_clock::now();
   auto ts = std::chrono::duration_cast<std::chrono::nanoseconds>(t - t0_).count();
 
   proto::buffer<8> track_uuid;
-  track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), per_thread.get_id());
+  track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), thread.get_id());
 
   proto::buffer<4> type;
-  type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::TYPE_SLICE_BEGIN));
+  type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(event_type));
 
   proto::buffer<256> name_buf;
   name_buf.write(static_cast<uint64_t>(TrackEvent::name), to_string(e));
@@ -286,19 +313,20 @@ void write_trace_begin(trace_type e) {
   buf.write(track_event);
   buf.write(trusted_packet_sequence_id);
 
-  ssize_t result = write(fd.load(), buf.data(), buf.size());
-  (void)result;
+  thread.write(buf);
 }
+
+void write_trace_event(trace_type e) { write_trace_begin(e, EventType::INSTANT); }
 
 void write_trace_end() {
   auto t = std::chrono::high_resolution_clock::now();
   auto ts = std::chrono::duration_cast<std::chrono::nanoseconds>(t - t0_).count();
 
   proto::buffer<8> track_uuid;
-  track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), per_thread.get_id());
+  track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), thread.get_id());
 
   proto::buffer<4> type;
-  type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::TYPE_SLICE_END));
+  type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::SLICE_END));
 
   proto::buffer<256> track_event;
   track_event.write_len_tag(static_cast<uint64_t>(TracePacket::track_event), type.size() + track_uuid.size());
@@ -317,49 +345,12 @@ void write_trace_end() {
   buf.write(track_event);
   buf.write(trusted_packet_sequence_id);
 
-  ssize_t result = write(fd.load(), buf.data(), buf.size());
-  (void)result;
-}
-
-void write_trace_event(trace_type e) {
-  auto t = std::chrono::high_resolution_clock::now();
-  auto ts = std::chrono::duration_cast<std::chrono::nanoseconds>(t - t0_).count();
-
-  proto::buffer<8> track_uuid;
-  track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), per_thread.get_id());
-
-  proto::buffer<4> type;
-  type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::TYPE_INSTANT));
-
-  proto::buffer<256> name_buf;
-  name_buf.write(static_cast<uint64_t>(TrackEvent::name), to_string(e));
-
-  proto::buffer<256> track_event;
-  track_event.write_len_tag(
-      static_cast<uint64_t>(TracePacket::track_event), name_buf.size() + type.size() + track_uuid.size());
-  track_event.write(name_buf);
-  track_event.write(type);
-  track_event.write(track_uuid);
-
-  proto::buffer<16> timestamp;
-  timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), ts);
-
-  proto::buffer<4> trusted_packet_sequence_id;
-  trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
-
-  proto::buffer<256> buf;
-  buf.write_len_tag(1, track_event.size() + trusted_packet_sequence_id.size() + timestamp.size());
-  buf.write(timestamp);
-  buf.write(track_event);
-  buf.write(trusted_packet_sequence_id);
-
-  ssize_t written = write(fd.load(), buf.data(), buf.size());
-  (void)written;
+  thread.write(buf);
 }
 
 void write_trace_header() {
   proto::buffer<8> uuid;
-  uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), (uint64_t)0);
+  uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), root_track_uuid);
 
   proto::buffer<8> track_descriptor;
   track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid);
@@ -367,7 +358,9 @@ void write_trace_header() {
   proto::buffer<32> trace_packet;
   trace_packet.write(1, track_descriptor);
 
-  ssize_t written = write(fd.load(), trace_packet.data(), trace_packet.size());
+  size_t at = file_offset.fetch_add(trace_packet.size());
+  assert(at == 0);
+  ssize_t written = pwrite(fd.load(), trace_packet.data(), trace_packet.size(), at);
   (void)written;
 }
 
@@ -379,12 +372,13 @@ void trace_init() {
   if (!path) {
     path = "pthread_trace.proto";
   }
+  // Don't use O_TRUNC here, it might truncate the file after we started writing it from another thread.
   int maybe_fd = open(path, O_CREAT | O_WRONLY, S_IRWXU);
   if (maybe_fd < 0) {
     fprintf(stderr, "Error opening file '%s': %s\n", path, strerror(errno));
     exit(1);
   }
-  // Not sure we can use pthread_once after all the hooking we do, so handle it
+  // Not sure we can use pthread_once after all the hooking of pthreads we do, so handle it
   // ourselves :(
   int negative_one = -1;
   if (fd.compare_exchange_strong(negative_one, maybe_fd)) {
@@ -392,12 +386,12 @@ void trace_init() {
     int result = ftruncate(fd.load(), 0);
     (void)result;
 
-    // We're done initializing.
-    initialized = true;
-
     fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
 
     write_trace_header();
+
+    // We're done initializing.
+    initialized = true;
   } else {
     // Another thread must have opened the file already, close our fd and wait
     // for it to say we're initialized.
