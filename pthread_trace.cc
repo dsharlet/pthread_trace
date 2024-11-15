@@ -578,8 +578,9 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
       exit(1);
     }
   }
-  write_trace_event(trace_type::mutex_trylock);
+  write_trace_begin(trace_type::mutex_trylock);
   int result = hook(mutex);
+  write_trace_end();
   if (result == 0) {
     write_trace_begin(trace_type::mutex_locked);
   }
