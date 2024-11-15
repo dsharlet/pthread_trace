@@ -35,6 +35,10 @@ enum class wire_type {
   i32 = 5,
 };
 
+// Writing protobufs is a bit tricky, because you need to know the size of child messages before writing the parent
+// message header. The approach used here is to use fixed size stack buffers for everything, and just copy them into
+// nested buffers after constructing them (so we know the size). This approach would be bad for deeply nested protos,
+// but we just don't have that much nesting in this case.
 template <size_t Capacity>
 class buffer {
   std::array<char, Capacity> buf_;
@@ -215,7 +219,6 @@ const char* to_string(trace_type t) {
 
 std::atomic<bool> initialized = false;
 std::atomic<int> fd = -1;
-std::atomic<size_t> file_offset = 0;
 
 auto t0_ = std::chrono::high_resolution_clock::now();
 
@@ -305,13 +308,13 @@ void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEG
   proto::buffer<4> trusted_packet_sequence_id;
   trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
 
-  proto::buffer<256> buf;
-  buf.write_len_tag(1, track_event.size() + trusted_packet_sequence_id.size() + timestamp.size());
-  buf.write(timestamp);
-  buf.write(track_event);
-  buf.write(trusted_packet_sequence_id);
+  proto::buffer<256> trace_packet;
+  trace_packet.write_len_tag(1, track_event.size() + trusted_packet_sequence_id.size() + timestamp.size());
+  trace_packet.write(timestamp);
+  trace_packet.write(track_event);
+  trace_packet.write(trusted_packet_sequence_id);
 
-  thread.write(buf);
+  thread.write(trace_packet);
 }
 
 void write_trace_event(trace_type e) { write_trace_begin(e, EventType::INSTANT); }
@@ -337,13 +340,13 @@ void write_trace_end() {
   proto::buffer<4> trusted_packet_sequence_id;
   trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
 
-  proto::buffer<256> buf;
-  buf.write_len_tag(1, track_event.size() + trusted_packet_sequence_id.size() + timestamp.size());
-  buf.write(timestamp);
-  buf.write(track_event);
-  buf.write(trusted_packet_sequence_id);
+  proto::buffer<256> trace_packet;
+  trace_packet.write_len_tag(1, track_event.size() + trusted_packet_sequence_id.size() + timestamp.size());
+  trace_packet.write(timestamp);
+  trace_packet.write(track_event);
+  trace_packet.write(trusted_packet_sequence_id);
 
-  thread.write(buf);
+  thread.write(trace_packet);
 }
 
 void write_trace_header() {
@@ -356,9 +359,7 @@ void write_trace_header() {
   proto::buffer<32> trace_packet;
   trace_packet.write(1, track_descriptor);
 
-  size_t at = file_offset.fetch_add(trace_packet.size());
-  assert(at == 0);
-  ssize_t written = pwrite(fd.load(), trace_packet.data(), trace_packet.size(), at);
+  ssize_t written = write(fd.load(), trace_packet.data(), trace_packet.size());
   (void)written;
 }
 
@@ -544,5 +545,4 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   write_trace_end();
   return hook(mutex);
 }
-
 }
