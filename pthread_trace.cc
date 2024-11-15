@@ -129,6 +129,16 @@ public:
 
 // These protobuf messages are for 'perfetto', excerpted from
 // https://cs.android.com/android/platform/superproject/main/+/main:external/perfetto/protos/perfetto/trace/trace_packet.proto
+
+enum class EventName {
+  /*optional uint64*/ iid = 1,
+  /*optional string*/ name = 2,
+};
+
+enum class InternedData {
+  /*repeated EventName*/ event_names = 2,
+};
+
 enum class TrackDescriptor {
   /*optional uint64*/ uuid = 1,
   /*optional uint64*/ parent_uuid = 5,
@@ -185,6 +195,12 @@ enum class TrackEvent {
   // oneof thread_time {
 };
 
+enum class SequenceFlags {
+  UNSPECIFIED = 0,
+  INCREMENTAL_STATE_CLEARED = 1,
+  NEEDS_INCREMENTAL_STATE = 2,
+};
+
 enum class TracePacket {
   /*optional uint64*/ timestamp = 8,
 
@@ -200,10 +216,14 @@ enum class TracePacket {
   /*optional TracePacketDefaults*/ trace_packet_defaults = 59,
 
   /*uint32*/ trusted_packet_sequence_id = 10,
+
+  /*optional InternedData*/ interned_data = 12,
+  /*optional uint32*/ sequence_flags = 13,
 };
 
 // The trace events we support.
 enum class trace_type {
+  none = 0,
   cond_broadcast,
   cond_signal,
   cond_timedwait,
@@ -213,6 +233,7 @@ enum class trace_type {
   mutex_trylock,
   mutex_unlock,
   mutex_locked,
+  count,
 };
 
 const char* to_string(trace_type t) {
@@ -226,7 +247,7 @@ const char* to_string(trace_type t) {
   case trace_type::mutex_trylock: return "mutex_trylock";
   case trace_type::mutex_unlock: return "mutex_unlock";
   case trace_type::mutex_locked: return "mutex_locked";
-  default: return nullptr;
+  default: assert(false);
   }
 }
 
@@ -268,8 +289,11 @@ public:
     proto::buffer<256> track_descriptor;
     track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, parent_uuid, name);
 
-    proto::buffer<256> trace_packet;
-    trace_packet.write(1, track_descriptor);
+    proto::buffer<4> trusted_packet_sequence_id;
+    trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
+
+    proto::buffer<4096> trace_packet;
+    trace_packet.write(1, track_descriptor, trusted_packet_sequence_id);
 
     write(trace_packet);
   }
@@ -307,7 +331,7 @@ void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEG
   type.write(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(event_type));
 
   proto::buffer<256> name_buf;
-  name_buf.write(static_cast<uint64_t>(TrackEvent::name), to_string(e));
+  name_buf.write(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(e));
 
   proto::buffer<256> track_event;
   track_event.write(static_cast<uint64_t>(TracePacket::track_event), name_buf, type, track_uuid);
@@ -318,8 +342,12 @@ void write_trace_begin(trace_type e, EventType event_type = EventType::SLICE_BEG
   proto::buffer<4> trusted_packet_sequence_id;
   trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
 
+  proto::buffer<4> sequence_flags;
+  sequence_flags.write(static_cast<uint64_t>(TracePacket::sequence_flags),
+      static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
+
   proto::buffer<256> trace_packet;
-  trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id);
+  trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
 
   thread.write(trace_packet);
 }
@@ -345,8 +373,12 @@ void write_trace_end() {
   proto::buffer<4> trusted_packet_sequence_id;
   trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
 
+  proto::buffer<4> sequence_flags;
+  sequence_flags.write(static_cast<uint64_t>(TracePacket::sequence_flags),
+      static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
+
   proto::buffer<256> trace_packet;
-  trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id);
+  trace_packet.write(1, timestamp, track_event, trusted_packet_sequence_id, sequence_flags);
 
   thread.write(trace_packet);
 }
@@ -358,8 +390,25 @@ void write_trace_header() {
   proto::buffer<8> track_descriptor;
   track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid);
 
-  proto::buffer<32> trace_packet;
-  trace_packet.write(1, track_descriptor);
+  proto::buffer<4096> event_names;
+  for (size_t i = 1; i < static_cast<size_t>(trace_type::count); ++i) {
+    proto::buffer<64> event_name;
+    event_name.write(static_cast<uint64_t>(EventName::iid), i);
+    event_name.write(static_cast<uint64_t>(EventName::name), to_string(static_cast<trace_type>(i)));
+    event_names.write(static_cast<uint64_t>(InternedData::event_names), event_name);
+  }
+  proto::buffer<4096> interned_data;
+  interned_data.write(static_cast<uint64_t>(TracePacket::interned_data), event_names);
+
+  proto::buffer<4> trusted_packet_sequence_id;
+  trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
+
+  proto::buffer<4> sequence_flags;
+  sequence_flags.write(static_cast<uint64_t>(TracePacket::sequence_flags),
+      static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED));
+
+  proto::buffer<4096> trace_packet;
+  trace_packet.write(1, track_descriptor, interned_data, trusted_packet_sequence_id, sequence_flags);
 
   ssize_t written = write(fd.load(), trace_packet.data(), trace_packet.size());
   (void)written;
