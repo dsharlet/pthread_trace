@@ -28,8 +28,13 @@ This tool captures the following information:
 ![Example trace](example.png)
 ![Example zoomed](zoomed_example.png)
 
-## Performance impact
-This tool is designed to have as minimal impact on performance as possible.
-However, even very lightweight tracing will be significant compared to uncontended thread synchronization primitives.
+## How it works
+This works by providing wrapper implementations of the various pthreads APIs that add tracing logic.
+Traces are accumulated in a thread-local buffer before being flushed to the trace file.
+Artifacts of this implementation will be visible in some ways, such as pauses in traced functions while a buffer is flushed.
+Flushes are indicated with a `(flush)` trace event.
+
+## Tracing overhead
+While this project makes some effort to reduce tracing overhead, even very lightweight tracing will be significant compared to uncontended thread synchronization primitives.
 It is possible (likely even) that enabling this tracing tool will alter the behavior of programs using pthreads.
 It might only slow the program down, but it might also dramatically alter the behavior of synchronization primitives.
