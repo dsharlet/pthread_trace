@@ -414,14 +414,17 @@ public:
   template <size_t N>
   void write(const proto::buffer<N>& message) {
     if (message.size() + buffer.size() > buffer.capacity()) {
+      // We can't write the flush slice before we flush, so get the timestamp now.
       proto::buffer<16> timestamp;
       make_timestamp(timestamp);
+
       // Our buffer is full, flush it.
       size_t at = file_offset.fetch_add(buffer.size());
       ssize_t result = pwrite(fd.load(), buffer.data(), buffer.size(), at);
       (void)result;
       buffer.clear();
 
+      // Now write the two flush events, using the timestamp from above.
       proto::buffer<64> flush;
       make_trace_packet(flush, timestamp, slice_begin, event_flush);
       timestamp.clear();
@@ -457,7 +460,7 @@ public:
     write_trace_packet(timestamp, fields...);
   }
 
-  static thread_state& get() { 
+  static thread_state& get() {
     thread_local thread_state t;
     return t;
   }
