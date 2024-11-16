@@ -216,9 +216,6 @@ enum class TracePacket {
   /*optional uint32*/ sequence_flags = 13,
 };
 
-constexpr auto trusted_packet_sequence_id =
-    proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
-
 constexpr auto sequence_flags_cleared = proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::sequence_flags),
     static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED));
 constexpr auto sequence_flags = proto::buffer<2>::make(
@@ -334,8 +331,6 @@ std::atomic<int> fd{-1};
 
 std::atomic<int> next_thread_id{0};
 
-constexpr uint64_t root_track_uuid = 0;
-
 auto get_start_time() {
   static auto t0 = std::chrono::high_resolution_clock::now();
   return t0;
@@ -344,20 +339,19 @@ auto get_start_time() {
 class thread_state {
   int id;
   proto::buffer<4> track_uuid;
+  proto::buffer<4> trusted_packet_sequence_id;
 
   // To minimize contention while writing to the file, we accumulate messages in this local buffer, and
   // flush it to the file when its full.
   proto::buffer<1024 * 64> buffer;
 
   // The previous timestamp emitted on this thread.
-  std::chrono::time_point<std::chrono::high_resolution_clock> t0 = get_start_time();
+  std::chrono::time_point<std::chrono::high_resolution_clock> t0;
 
   void write_track_descriptor() {
     // Write the thread descriptor once.
     proto::buffer<4> uuid;
     uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), id);
-
-    auto parent_uuid = proto::buffer<2>::make(static_cast<uint64_t>(TrackDescriptor::parent_uuid), root_track_uuid);
 
     // Use the thread id as the thread name, pad it so it sorts alphabetically in numerical order.
     // TODO: Use real thread names?
@@ -368,17 +362,19 @@ class thread_state {
     name.write(static_cast<uint64_t>(TrackDescriptor::name), thread_name.c_str());
 
     proto::buffer<256> track_descriptor;
-    track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, parent_uuid, name);
+    track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, name);
 
-    proto::buffer<256> trace_packet;
-    trace_packet.write(trace_packet_tag, track_descriptor, trusted_packet_sequence_id);
+    proto::buffer<1024> trace_packet;
+    trace_packet.write(trace_packet_tag, track_descriptor, get_interned_data(), trusted_packet_sequence_id,
+        sequence_flags_cleared);
 
     write(trace_packet);
   }
 
 public:
-  thread_state() : id(next_thread_id++) {
+  thread_state() : id(next_thread_id++), t0(get_start_time()) {
     track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), id);
+    trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), id + 1);
 
     write_track_descriptor();
   }
@@ -449,20 +445,6 @@ public:
   }
 };
 
-void write_trace_header() {
-  auto uuid = proto::buffer<2>::make(static_cast<uint8_t>(TrackDescriptor::uuid), root_track_uuid);
-
-  proto::buffer<8> track_descriptor;
-  track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid);
-
-  proto::buffer<1024> trace_packet;
-  trace_packet.write(
-      trace_packet_tag, track_descriptor, get_interned_data(), trusted_packet_sequence_id, sequence_flags_cleared);
-
-  ssize_t written = ::write(fd.load(), trace_packet.data(), trace_packet.size());
-  (void)written;
-}
-
 void trace_init() {
   if (initialized) {
     return;
@@ -486,8 +468,6 @@ void trace_init() {
     (void)result;
 
     fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
-
-    write_trace_header();
 
     // We're done initializing.
     initialized = true;
