@@ -260,7 +260,7 @@ constexpr uint64_t trace_packet_tag = 1;
 using namespace perfetto;
 
 // The trace events we support.
-enum class pthread_event_type {
+enum class event_type {
   none = 0,
   cond_broadcast,
   cond_signal,
@@ -272,44 +272,48 @@ enum class pthread_event_type {
   mutex_unlock,
   mutex_locked,
   once,
+  flush,
   count,
 };
 
 auto event_cond_broadcast = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_broadcast));
-auto event_cond_signal = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_signal));
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::cond_broadcast));
+auto event_cond_signal =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::cond_signal));
 auto event_cond_timedwait = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_timedwait));
-auto event_cond_wait = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::cond_wait));
-auto event_join = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::join));
-auto event_mutex_lock = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_lock));
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::cond_timedwait));
+auto event_cond_wait =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::cond_wait));
+auto event_join =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::join));
+auto event_mutex_lock =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_lock));
 auto event_mutex_trylock = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_trylock));
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_trylock));
 auto event_mutex_unlock = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_unlock));
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_unlock));
 auto event_mutex_locked = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::mutex_locked));
-auto event_once = proto::buffer<2>::make(
-    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(pthread_event_type::once));
+    static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_locked));
+auto event_once =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::once));
+auto event_flush =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::flush));
 
-const char* to_string(pthread_event_type t) {
+const char* to_string(event_type t) {
   switch (t) {
-  case pthread_event_type::cond_broadcast: return "cond_broadcast";
-  case pthread_event_type::cond_signal: return "cond_signal";
-  case pthread_event_type::cond_timedwait: return "cond_timedwait";
-  case pthread_event_type::cond_wait: return "cond_wait";
-  case pthread_event_type::join: return "join";
-  case pthread_event_type::mutex_lock: return "mutex_lock";
-  case pthread_event_type::mutex_trylock: return "mutex_trylock";
-  case pthread_event_type::mutex_unlock: return "mutex_unlock";
-  case pthread_event_type::mutex_locked: return "mutex_locked";
-  case pthread_event_type::once: return "once";
-  case pthread_event_type::none:
-  case pthread_event_type::count: break;
+  case event_type::cond_broadcast: return "cond_broadcast";
+  case event_type::cond_signal: return "cond_signal";
+  case event_type::cond_timedwait: return "cond_timedwait";
+  case event_type::cond_wait: return "cond_wait";
+  case event_type::join: return "join";
+  case event_type::mutex_lock: return "mutex_lock";
+  case event_type::mutex_trylock: return "mutex_trylock";
+  case event_type::mutex_unlock: return "mutex_unlock";
+  case event_type::mutex_locked: return "mutex_locked";
+  case event_type::once: return "once";
+  case event_type::flush: return "flush";
+  case event_type::none:
+  case event_type::count: break;
   }
   return nullptr;
 }
@@ -325,6 +329,9 @@ auto get_start_time() {
   static auto t0 = std::chrono::high_resolution_clock::now();
   return t0;
 }
+
+template <size_t N, typename... TrackEventFields>
+void make_trace_packet(proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields);
 
 class thread_state {
   proto::buffer<8> track_uuid;
@@ -382,10 +389,19 @@ public:
   template <size_t N>
   void write(const proto::buffer<N>& message) {
     if (message.size() + buffer.size() > buffer.capacity()) {
+      proto::buffer<16> timestamp;
+      make_timestamp(timestamp);
       // Our buffer is full, flush it.
       ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
       (void)result;
       buffer.clear();
+
+      proto::buffer<64> flush;
+      make_trace_packet(flush, timestamp, slice_begin, event_flush);
+      timestamp.clear();
+      make_timestamp(timestamp);
+      make_trace_packet(flush, timestamp, slice_end);
+      buffer.write(flush);
     }
     buffer.write(message);
   }
@@ -393,8 +409,8 @@ public:
 
 thread_local thread_state thread;
 
-template <typename... TrackEventFields>
-void make_trace_packet(proto::buffer<32>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
+template <size_t N, typename... TrackEventFields>
+void make_trace_packet(proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
   proto::buffer<8> track_event;
   track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., thread.get_track_uuid());
 
@@ -424,10 +440,10 @@ void write_trace_header() {
   track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid);
 
   proto::buffer<4096> event_names;
-  for (size_t i = 1; i < static_cast<size_t>(pthread_event_type::count); ++i) {
+  for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
     proto::buffer<64> event_name;
     event_name.write(static_cast<uint64_t>(EventName::iid), i);
-    event_name.write(static_cast<uint64_t>(EventName::name), to_string(static_cast<pthread_event_type>(i)));
+    event_name.write(static_cast<uint64_t>(EventName::name), to_string(static_cast<event_type>(i)));
     event_names.write(static_cast<uint64_t>(InternedData::event_names), event_name);
   }
   proto::buffer<4096> interned_data;
