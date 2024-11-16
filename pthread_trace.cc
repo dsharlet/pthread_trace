@@ -343,12 +343,12 @@ const char* to_string(event_type t) {
   return nullptr;
 }
 
-std::atomic<bool> initialized = false;
-std::atomic<int> fd = -1;
+std::atomic<bool> initialized{false};
+std::atomic<int> fd{-1};
 
-std::atomic<size_t> file_offset = 0;
+std::atomic<size_t> file_offset{0};
 
-std::atomic<int> next_thread_id = 0;
+std::atomic<int> next_thread_id{0};
 
 constexpr uint64_t root_track_uuid = 0;
 
