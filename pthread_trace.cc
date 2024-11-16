@@ -332,9 +332,6 @@ auto get_start_time() {
   return t0;
 }
 
-template <size_t N, typename... TrackEventFields>
-void make_trace_packet(proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields);
-
 class thread_state {
   proto::buffer<8> track_uuid;
 
@@ -409,33 +406,37 @@ public:
     }
     buffer.write(message);
   }
+
+  template <size_t N, typename... TrackEventFields>
+  void make_trace_packet(
+      proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
+    proto::buffer<8> track_event;
+    track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., get_track_uuid());
+
+    buf.write(trace_packet_tag, trusted_packet_sequence_id, sequence_flags, track_event, timestamp);
+  }
+
+  template <typename... TrackEventFields>
+  void write_trace_packet(const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
+    proto::buffer<32> trace_packet;
+    make_trace_packet(trace_packet, timestamp, fields...);
+
+    write(trace_packet);
+  }
+
+  template <typename... TrackEventFields>
+  void write_trace_packet(const TrackEventFields&... fields) {
+    proto::buffer<16> timestamp;
+    make_timestamp(timestamp);
+
+    write_trace_packet(timestamp, fields...);
+  }
+
+  static thread_state& get() { 
+    thread_local thread_state t;
+    return t;
+  }
 };
-
-thread_local thread_state thread;
-
-template <size_t N, typename... TrackEventFields>
-void make_trace_packet(proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
-  proto::buffer<8> track_event;
-  track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., thread.get_track_uuid());
-
-  buf.write(trace_packet_tag, trusted_packet_sequence_id, sequence_flags, track_event, timestamp);
-}
-
-template <typename... TrackEventFields>
-void write_trace_packet(const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
-  proto::buffer<32> trace_packet;
-  make_trace_packet(trace_packet, timestamp, fields...);
-
-  thread.write(trace_packet);
-}
-
-template <typename... TrackEventFields>
-void write_trace_packet(const TrackEventFields&... fields) {
-  proto::buffer<16> timestamp;
-  thread.make_timestamp(timestamp);
-
-  write_trace_packet(timestamp, fields...);
-}
 
 void write_trace_header() {
   auto uuid = proto::buffer<2>::make(static_cast<uint8_t>(TrackDescriptor::uuid), root_track_uuid);
@@ -517,7 +518,7 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
       exit(1);
     }
   }
-  write_trace_packet(instant, event_cond_broadcast);
+  thread_state::get().write_trace_packet(instant, event_cond_broadcast);
   return hook(cond);
 }
 
@@ -532,7 +533,7 @@ int pthread_cond_signal(pthread_cond_t* cond) {
       exit(1);
     }
   }
-  write_trace_packet(instant, event_cond_signal);
+  thread_state::get().write_trace_packet(instant, event_cond_signal);
   return hook(cond);
 }
 
@@ -548,15 +549,16 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
     }
   }
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
+  auto& t = thread_state::get();
   proto::buffer<16> timestamp;
-  thread.make_timestamp(timestamp);
-  write_trace_packet(timestamp, slice_end);
-  write_trace_packet(timestamp, slice_begin, event_cond_timedwait);
+  t.make_timestamp(timestamp);
+  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_begin, event_cond_timedwait);
   int result = hook(cond, mutex, abstime);
   timestamp.clear();
-  thread.make_timestamp(timestamp);
-  write_trace_packet(timestamp, slice_end);
-  write_trace_packet(timestamp, slice_begin, event_mutex_locked);
+  t.make_timestamp(timestamp);
+  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_begin, event_mutex_locked);
   return result;
 }
 
@@ -572,15 +574,16 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
     }
   }
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
+  auto& t = thread_state::get();
   proto::buffer<16> timestamp;
-  thread.make_timestamp(timestamp);
-  write_trace_packet(timestamp, slice_end);
-  write_trace_packet(timestamp, slice_begin, event_cond_wait);
+  t.make_timestamp(timestamp);
+  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_begin, event_cond_wait);
   int result = hook(cond, mutex);
   timestamp.clear();
-  thread.make_timestamp(timestamp);
-  write_trace_packet(timestamp, slice_end);
-  write_trace_packet(timestamp, slice_begin, event_mutex_locked);
+  t.make_timestamp(timestamp);
+  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_begin, event_mutex_locked);
   return result;
 }
 
@@ -595,9 +598,10 @@ int pthread_join(pthread_t thread, void** value_ptr) {
       exit(1);
     }
   }
-  write_trace_packet(slice_begin, event_join);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_join);
   int result = hook(thread, value_ptr);
-  write_trace_packet(slice_end);
+  t.write_trace_packet(slice_end);
   return result;
 }
 
@@ -612,12 +616,13 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
       exit(1);
     }
   }
-  write_trace_packet(slice_begin, event_mutex_lock);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_mutex_lock);
   int result = hook(mutex);
   proto::buffer<16> timestamp;
-  thread.make_timestamp(timestamp);
-  write_trace_packet(timestamp, slice_end);
-  write_trace_packet(timestamp, slice_begin, event_mutex_locked);
+  t.make_timestamp(timestamp);
+  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_begin, event_mutex_locked);
   return result;
 }
 
@@ -632,11 +637,12 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
       exit(1);
     }
   }
-  write_trace_packet(slice_begin, event_mutex_trylock);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_mutex_trylock);
   int result = hook(mutex);
-  write_trace_packet(slice_end);
+  t.write_trace_packet(slice_end);
   if (result == 0) {
-    write_trace_packet(slice_begin, event_mutex_locked);
+    t.write_trace_packet(slice_begin, event_mutex_locked);
   }
   return result;
 }
@@ -652,14 +658,15 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
       exit(1);
     }
   }
-  write_trace_packet(slice_begin, event_mutex_unlock);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_mutex_unlock);
   int result = hook(mutex);
   proto::buffer<16> timestamp;
-  thread.make_timestamp(timestamp);
+  t.make_timestamp(timestamp);
   proto::buffer<32> end;
-  make_trace_packet(end, timestamp, slice_end);
-  thread.write(end);
-  thread.write(end);
+  t.make_trace_packet(end, timestamp, slice_end);
+  t.write(end);
+  t.write(end);
   return result;
 }
 
@@ -674,9 +681,10 @@ int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
       exit(1);
     }
   }
-  write_trace_packet(slice_begin, event_once);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_once);
   int result = hook(once_control, init_routine);
-  write_trace_packet(slice_end);
+  t.write_trace_packet(slice_end);
   return result;
 }
 
