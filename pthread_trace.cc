@@ -419,7 +419,7 @@ public:
   template <size_t N, typename... TrackEventFields>
   void make_trace_packet(
       proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
-    proto::buffer<8> track_event;
+    proto::buffer<16> track_event;
     track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., get_track_uuid());
 
     buf.write(trace_packet_tag, trusted_packet_sequence_id, sequence_flags, track_event, timestamp);
