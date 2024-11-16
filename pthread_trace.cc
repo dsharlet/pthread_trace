@@ -206,6 +206,7 @@ enum class SequenceFlags {
 };
 
 enum class TracePacket {
+  /*ClockSnapshot*/ clock_snapshot = 6,
   /*optional uint64*/ timestamp = 8,
   /*optional uint32*/ timestamp_clock_id = 58,
   /*TrackEvent*/ track_event = 11,
@@ -214,6 +215,22 @@ enum class TracePacket {
   /*uint32*/ trusted_packet_sequence_id = 10,
   /*optional InternedData*/ interned_data = 12,
   /*optional uint32*/ sequence_flags = 13,
+};
+
+enum class TracePacketDefaults {
+  /*optional uint32*/ timestamp_clock_id = 58,
+};
+
+// https://cs.android.com/android/platform/superproject/main/+/main:external/perfetto/protos/perfetto/trace/clock_snapshot.proto
+enum class Clock {
+  /*optional uint32*/ clock_id = 1,
+  /*optional uint64*/ timestamp = 2,
+  /*optional bool*/ is_incremental = 3,
+};
+
+// A snapshot of clock readings to allow for trace alignment.
+enum class ClockSnapshot {
+  /*repeated Clock*/ clocks = 1,
 };
 
 constexpr auto sequence_flags_cleared = proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::sequence_flags),
@@ -331,10 +348,7 @@ std::atomic<int> fd{-1};
 
 std::atomic<int> next_thread_id{0};
 
-auto get_start_time() {
-  static auto t0 = std::chrono::high_resolution_clock::now();
-  return t0;
-}
+constexpr uint64_t clock_id = 64;
 
 class thread_state {
   int id;
@@ -347,6 +361,28 @@ class thread_state {
 
   // The previous timestamp emitted on this thread.
   std::chrono::time_point<std::chrono::high_resolution_clock> t0;
+
+  void write_clock_snapshot() {
+    proto::buffer<32> clock;
+    clock.write(static_cast<uint64_t>(Clock::clock_id), clock_id);
+    clock.write(static_cast<uint64_t>(Clock::timestamp),
+        std::chrono::time_point_cast<std::chrono::nanoseconds>(t0).time_since_epoch().count());
+    clock.write(static_cast<uint64_t>(Clock::is_incremental), true);
+
+    proto::buffer<64> clocks;
+    clocks.write(static_cast<uint64_t>(ClockSnapshot::clocks), clock);
+
+    proto::buffer<64> clock_snapshot;
+    clock_snapshot.write(static_cast<uint64_t>(TracePacket::clock_snapshot), clocks);
+
+    proto::buffer<16> timestamp;
+    timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), static_cast<uint64_t>(0));
+
+    proto::buffer<64> trace_packet;
+    trace_packet.write(trace_packet_tag, timestamp, clock_snapshot, trusted_packet_sequence_id);
+
+    write(trace_packet);
+  }
 
   void write_track_descriptor() {
     // Write the thread descriptor once.
@@ -364,20 +400,27 @@ class thread_state {
     proto::buffer<256> track_descriptor;
     track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, name);
 
+    proto::buffer<32> timestamp_clock_id;
+    timestamp_clock_id.write(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
+
+    proto::buffer<32> trace_packet_defaults;
+    trace_packet_defaults.write(static_cast<uint64_t>(TracePacket::trace_packet_defaults), timestamp_clock_id);
+
     proto::buffer<1024> trace_packet;
-    trace_packet.write(trace_packet_tag, track_descriptor, get_interned_data(), trusted_packet_sequence_id,
-        sequence_flags_cleared);
+    trace_packet.write(trace_packet_tag, track_descriptor, trace_packet_defaults, get_interned_data(),
+        trusted_packet_sequence_id, sequence_flags_cleared);
 
     write(trace_packet);
   }
 
 public:
-  thread_state() : id(next_thread_id++), t0(get_start_time()) {
+  thread_state() : id(next_thread_id++), t0(std::chrono::high_resolution_clock::now()) {
     track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), id);
     // We can't use sequence id 0, just add one.
     trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), id + 1);
 
     write_track_descriptor();
+    write_clock_snapshot();
   }
 
   ~thread_state() {
@@ -391,6 +434,7 @@ public:
     auto now = std::chrono::high_resolution_clock::now();
     uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count();
     timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), delta);
+    t0 = now;
   }
 
   template <size_t N>
