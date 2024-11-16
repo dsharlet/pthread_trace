@@ -98,10 +98,19 @@ public:
 
   void write(const buffer<2>& buf) {
     assert(buf.size() == 2);
-    assert(size_ + 2 < Capacity);
-    buf_[size_ + 0] = buf.data()[0];
-    buf_[size_ + 1] = buf.data()[1];
+    assert(size_ + 2 <= Capacity);
+    memcpy(&buf_[size_], buf.data(), 2);
     size_ += 2;
+  }
+  void write(const buffer<4>& buf) {
+    assert(buf.size() >= 2);
+    assert(size_ + buf.size() <= Capacity);
+    switch (buf.size()) { 
+    case 4: memcpy(&buf_[size_], buf.data(), 4); break;
+    case 3: memcpy(&buf_[size_], buf.data(), 3); break;
+    case 2: memcpy(&buf_[size_], buf.data(), 2); break;
+    }
+    size_ += buf.size();
   }
 
   template <size_t N, typename... Fields>
@@ -333,7 +342,7 @@ auto get_start_time() {
 }
 
 class thread_state {
-  proto::buffer<8> track_uuid;
+  proto::buffer<4> track_uuid;
 
   // To minimize contention while writing to the file, we accumulate messages in this local buffer, and
   // flush it to the file when its full.
@@ -349,7 +358,7 @@ public:
     track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), id);
 
     // Write the thread descriptor once.
-    proto::buffer<8> uuid;
+    proto::buffer<4> uuid;
     uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), id);
 
     auto parent_uuid = proto::buffer<2>::make(static_cast<uint64_t>(TrackDescriptor::parent_uuid), root_track_uuid);
@@ -378,7 +387,7 @@ public:
     }
   }
 
-  const proto::buffer<8>& get_track_uuid() const { return track_uuid; }
+  const proto::buffer<4>& get_track_uuid() const { return track_uuid; }
 
   void make_timestamp(proto::buffer<16>& timestamp) {
     auto now = std::chrono::high_resolution_clock::now();
