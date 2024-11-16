@@ -105,7 +105,7 @@ public:
   void write(const buffer<4>& buf) {
     assert(buf.size() >= 2);
     assert(size_ + buf.size() <= Capacity);
-    switch (buf.size()) { 
+    switch (buf.size()) {
     case 4: memcpy(&buf_[size_], buf.data(), 4); break;
     case 3: memcpy(&buf_[size_], buf.data(), 3); break;
     case 2: memcpy(&buf_[size_], buf.data(), 2); break;
@@ -436,8 +436,7 @@ public:
   }
 
   template <size_t N, typename... TrackEventFields>
-  void make_trace_packet(
-      proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
+  void make_trace_packet(proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
     proto::buffer<16> track_event;
     track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., get_track_uuid());
 
@@ -547,7 +546,7 @@ unsigned int sleep(unsigned int secs) {
   }
   thread_state::get().write_trace_packet(slice_begin, event_sleep);
   unsigned int result = hook(secs);
-  thread_state::get().write_trace_packet(slice_end);
+  thread_state::get().write_trace_packet(slice_end);  // event_sleep
   return result;
 }
 
@@ -564,7 +563,7 @@ int usleep(useconds_t usecs) {
   }
   thread_state::get().write_trace_packet(slice_begin, event_usleep);
   int result = hook(usecs);
-  thread_state::get().write_trace_packet(slice_end);
+  thread_state::get().write_trace_packet(slice_end);  // event_usleep
   return result;
 }
 
@@ -581,7 +580,7 @@ int nanosleep(const struct timespec* duration, struct timespec* rem) {
   }
   thread_state::get().write_trace_packet(slice_begin, event_nanosleep);
   int result = hook(duration, rem);
-  thread_state::get().write_trace_packet(slice_end);
+  thread_state::get().write_trace_packet(slice_end);  // event_nanosleep
   return result;
 }
 
@@ -598,7 +597,7 @@ int sched_yield() {
   }
   thread_state::get().write_trace_packet(slice_begin, event_yield);
   int result = hook();
-  thread_state::get().write_trace_packet(slice_end);
+  thread_state::get().write_trace_packet(slice_end);  // event_yield
   return result;
 }
 
@@ -616,7 +615,7 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
   }
   thread_state::get().write_trace_packet(slice_begin, event_cond_broadcast);
   int result = hook(cond);
-  thread_state::get().write_trace_packet(slice_end);
+  thread_state::get().write_trace_packet(slice_end);  // event_cond_broadcast
   return result;
 }
 
@@ -633,7 +632,7 @@ int pthread_cond_signal(pthread_cond_t* cond) {
   }
   thread_state::get().write_trace_packet(slice_begin, event_cond_signal);
   int result = hook(cond);
-  thread_state::get().write_trace_packet(slice_end);
+  thread_state::get().write_trace_packet(slice_end);  // event_cond_signal
   return result;
 }
 
@@ -652,12 +651,12 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
   auto& t = thread_state::get();
   proto::buffer<16> timestamp;
   t.make_timestamp(timestamp);
-  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_end);  // event_mutex_locked
   t.write_trace_packet(timestamp, slice_begin, event_cond_timedwait);
   int result = hook(cond, mutex, abstime);
   timestamp.clear();
   t.make_timestamp(timestamp);
-  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_end);  // event_cond_timedwait
   t.write_trace_packet(timestamp, slice_begin, event_mutex_locked);
   return result;
 }
@@ -677,12 +676,12 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
   auto& t = thread_state::get();
   proto::buffer<16> timestamp;
   t.make_timestamp(timestamp);
-  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_end);  // event_mutex_locked
   t.write_trace_packet(timestamp, slice_begin, event_cond_wait);
   int result = hook(cond, mutex);
   timestamp.clear();
   t.make_timestamp(timestamp);
-  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_end);  // event_cond_wait
   t.write_trace_packet(timestamp, slice_begin, event_mutex_locked);
   return result;
 }
@@ -701,7 +700,7 @@ int pthread_join(pthread_t thread, void** value_ptr) {
   auto& t = thread_state::get();
   t.write_trace_packet(slice_begin, event_join);
   int result = hook(thread, value_ptr);
-  t.write_trace_packet(slice_end);
+  t.write_trace_packet(slice_end);  // event_join
   return result;
 }
 
@@ -721,7 +720,7 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
   int result = hook(mutex);
   proto::buffer<16> timestamp;
   t.make_timestamp(timestamp);
-  t.write_trace_packet(timestamp, slice_end);
+  t.write_trace_packet(timestamp, slice_end);  // event_mutex_lock
   t.write_trace_packet(timestamp, slice_begin, event_mutex_locked);
   return result;
 }
@@ -740,7 +739,7 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
   auto& t = thread_state::get();
   t.write_trace_packet(slice_begin, event_mutex_trylock);
   int result = hook(mutex);
-  t.write_trace_packet(slice_end);
+  t.write_trace_packet(slice_end);  // event_mutex_trylock
   if (result == 0) {
     t.write_trace_packet(slice_begin, event_mutex_locked);
   }
@@ -758,15 +757,17 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
       exit(1);
     }
   }
+
+  // It makes some sense that we should report the mutex as locked until this returns.
+  // However, it seems that other threads are able to lock the mutex well before pthread_mutex_unlock returns, so this
+  // results in confusing traces.
   auto& t = thread_state::get();
-  t.write_trace_packet(slice_begin, event_mutex_unlock);
-  int result = hook(mutex);
   proto::buffer<16> timestamp;
   t.make_timestamp(timestamp);
-  proto::buffer<32> end;
-  t.make_trace_packet(end, timestamp, slice_end);
-  t.write(end);
-  t.write(end);
+  t.write_trace_packet(timestamp, slice_end);  // event_mutex_locked
+  t.write_trace_packet(timestamp, slice_begin, event_mutex_unlock);
+  int result = hook(mutex);
+  t.write_trace_packet(slice_end);  // event_mutex_unlock
   return result;
 }
 
@@ -784,7 +785,7 @@ int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
   auto& t = thread_state::get();
   t.write_trace_packet(slice_begin, event_once);
   int result = hook(once_control, init_routine);
-  t.write_trace_packet(slice_end);
+  t.write_trace_packet(slice_end);  // event_once
   return result;
 }
 
