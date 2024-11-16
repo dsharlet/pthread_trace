@@ -67,6 +67,14 @@ class buffer {
 
   constexpr buffer(uint8_t d0, uint8_t d1) : buf_({{d0, d1}}), size_(2) {}
 
+  void write_all() {}
+
+  template <typename Field0, typename... Fields>
+  void write_all(const Field0& first, const Fields&... rest) {
+    write(first);
+    write_all(rest...);
+  }
+
 public:
   constexpr buffer() : size_(0) {}
 
@@ -88,8 +96,6 @@ public:
     std::memcpy(&buf_[size_], s, n);
     size_ += n;
   }
-
-  void write() {}
 
   template <size_t M>
   void write(const buffer<M>& buf) {
@@ -113,17 +119,16 @@ public:
     size_ += buf.size();
   }
 
-  template <size_t N, typename... Fields>
-  void write(const buffer<N>& first, const Fields&... rest) {
-    write(first);
-    write(rest...);
-  }
-
   // Write a tag.
   void write_tag(uint64_t tag, wire_type type) { write_varint((tag << 3) | static_cast<uint64_t>(type)); }
 
   // Write tagged values.
-  void write(uint64_t tag, uint64_t value) {
+  void write_tagged(uint64_t tag, uint64_t value) {
+    write_tag(tag, wire_type::varint);
+    write_varint(value);
+  }
+
+  void write_tagged(uint64_t tag, bool value) {
     write_tag(tag, wire_type::varint);
     write_varint(value);
   }
@@ -133,19 +138,18 @@ public:
   //   write_varint(value);
   // }
 
-  void write(uint64_t tag, const char* str) {
-    std::size_t len = strlen(str);
+  void write_tagged(uint64_t tag, const char* str) {
     write_tag(tag, wire_type::len);
+    std::size_t len = strlen(str);
     write_varint(len);
     write(str, len);
   }
 
-  template <size_t N, typename... Fields>
-  void write(uint64_t tag, const buffer<N>& first, const Fields&... rest) {
+  template <typename... Fields>
+  void write_tagged(uint64_t tag, const Fields&... fields) {
     write_tag(tag, wire_type::len);
-    write_varint(first.size() + sum(rest.size()...));
-    write(first);
-    write(rest...);
+    write_varint(sum(fields.size()...));
+    write_all(fields...);
   }
 };
 
@@ -316,7 +320,7 @@ constexpr auto event_nanosleep =
 constexpr auto event_flush =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::flush));
 
-constexpr auto timestamp_zero = 
+constexpr auto timestamp_zero =
     proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::timestamp), static_cast<uint64_t>(0));
 
 const char* to_string(event_type t) {
@@ -347,12 +351,12 @@ const auto& get_interned_data() {
     proto::buffer<512> event_names;
     for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
       proto::buffer<64> event_name;
-      event_name.write(static_cast<uint64_t>(EventName::iid), i);
-      event_name.write(static_cast<uint64_t>(EventName::name), to_string(static_cast<event_type>(i)));
-      event_names.write(static_cast<uint64_t>(InternedData::event_names), event_name);
+      event_name.write_tagged(static_cast<uint64_t>(EventName::iid), i);
+      event_name.write_tagged(static_cast<uint64_t>(EventName::name), to_string(static_cast<event_type>(i)));
+      event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
     }
     proto::buffer<512> interned_data;
-    interned_data.write(static_cast<uint64_t>(TracePacket::interned_data), event_names);
+    interned_data.write_tagged(static_cast<uint64_t>(TracePacket::interned_data), event_names);
     return interned_data;
   }();
 
@@ -380,24 +384,24 @@ class thread_state {
 
   void write_clock_snapshot() {
     proto::buffer<32> clock;
-    clock.write(static_cast<uint64_t>(Clock::clock_id), clock_id);
-    clock.write(static_cast<uint64_t>(Clock::timestamp), static_cast<uint64_t>(0));
-    clock.write(static_cast<uint64_t>(Clock::is_incremental), true);
+    clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), clock_id);
+    clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), static_cast<uint64_t>(0));
+    clock.write_tagged(static_cast<uint64_t>(Clock::is_incremental), true);
 
     proto::buffer<32> boottime_clock;
-    boottime_clock.write(static_cast<uint64_t>(Clock::clock_id), static_cast<uint64_t>(BuiltinClocks::BOOTTIME));
-    boottime_clock.write(static_cast<uint64_t>(Clock::timestamp),
-        std::chrono::time_point_cast<std::chrono::nanoseconds>(t0).time_since_epoch().count());
+    boottime_clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), static_cast<uint64_t>(BuiltinClocks::BOOTTIME));
+    boottime_clock.write_tagged(static_cast<uint64_t>(Clock::timestamp),
+        static_cast<uint64_t>(std::chrono::time_point_cast<std::chrono::nanoseconds>(t0).time_since_epoch().count()));
 
     proto::buffer<64> clocks;
-    clocks.write(static_cast<uint64_t>(ClockSnapshot::clocks), clock);
-    clocks.write(static_cast<uint64_t>(ClockSnapshot::clocks), boottime_clock);
+    clocks.write_tagged(static_cast<uint64_t>(ClockSnapshot::clocks), clock);
+    clocks.write_tagged(static_cast<uint64_t>(ClockSnapshot::clocks), boottime_clock);
 
     proto::buffer<64> clock_snapshot;
-    clock_snapshot.write(static_cast<uint64_t>(TracePacket::clock_snapshot), clocks);
+    clock_snapshot.write_tagged(static_cast<uint64_t>(TracePacket::clock_snapshot), clocks);
 
     proto::buffer<64> trace_packet;
-    trace_packet.write(trace_packet_tag, clock_snapshot, trusted_packet_sequence_id);
+    trace_packet.write_tagged(trace_packet_tag, clock_snapshot, trusted_packet_sequence_id);
 
     write(trace_packet);
   }
@@ -405,7 +409,7 @@ class thread_state {
   void write_track_descriptor() {
     // Write the thread descriptor once.
     proto::buffer<4> uuid;
-    uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), id);
+    uuid.write_tagged(static_cast<uint64_t>(TrackDescriptor::uuid), static_cast<uint64_t>(id));
 
     // Use the thread id as the thread name, pad it so it sorts alphabetically in numerical order.
     // TODO: Use real thread names?
@@ -413,19 +417,19 @@ class thread_state {
     thread_name = std::string(4 - thread_name.size(), '0') + thread_name;
 
     proto::buffer<256> name;
-    name.write(static_cast<uint64_t>(TrackDescriptor::name), thread_name.c_str());
+    name.write_tagged(static_cast<uint64_t>(TrackDescriptor::name), thread_name.c_str());
 
     proto::buffer<256> track_descriptor;
-    track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, name);
+    track_descriptor.write_tagged(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, name);
 
     proto::buffer<32> timestamp_clock_id;
-    timestamp_clock_id.write(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
+    timestamp_clock_id.write_tagged(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
 
     proto::buffer<32> trace_packet_defaults;
-    trace_packet_defaults.write(static_cast<uint64_t>(TracePacket::trace_packet_defaults), timestamp_clock_id);
+    trace_packet_defaults.write_tagged(static_cast<uint64_t>(TracePacket::trace_packet_defaults), timestamp_clock_id);
 
     proto::buffer<1024> trace_packet;
-    trace_packet.write(trace_packet_tag, track_descriptor, trace_packet_defaults, get_interned_data(),
+    trace_packet.write_tagged(trace_packet_tag, track_descriptor, trace_packet_defaults, get_interned_data(),
         trusted_packet_sequence_id, sequence_flags_cleared);
 
     write(trace_packet);
@@ -433,9 +437,9 @@ class thread_state {
 
 public:
   thread_state() : id(next_thread_id++), t0(std::chrono::high_resolution_clock::now()) {
-    track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), id);
+    track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
     // We can't use sequence id 0, just add one.
-    trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), id + 1);
+    trusted_packet_sequence_id.write_tagged(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(id + 1));
 
     write_track_descriptor();
     write_clock_snapshot();
@@ -451,7 +455,7 @@ public:
   void make_timestamp(proto::buffer<16>& timestamp) {
     auto now = std::chrono::high_resolution_clock::now();
     uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count();
-    timestamp.write(static_cast<uint64_t>(TracePacket::timestamp), delta);
+    timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta);
     t0 = now;
   }
 
@@ -478,10 +482,11 @@ public:
   void write_trace_packet_with_timestamp(
       const proto::buffer<TimestampSize>& timestamp, const TrackEventFields&... fields) {
     proto::buffer<16> track_event;
-    track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., track_uuid);
+    track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), fields..., track_uuid);
 
     proto::buffer<32> trace_packet;
-    trace_packet.write(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
+    trace_packet.write_tagged(
+        trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
 
     write(trace_packet);
   }
