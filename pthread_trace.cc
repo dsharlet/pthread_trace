@@ -191,34 +191,12 @@ enum class EventType {
 };
 
 enum class TrackEvent {
-  // Optional name of the event for its display in trace viewer. May be left
-  // unspecified for events with typed arguments.
-  //
-  // Note that metrics should not rely on event names, as they are prone to
-  // changing. Instead, they should use typed arguments to identify the events
-  // they are interested in.
-  // oneof {
   /*uint64*/ name_iid = 10,
   /*string*/ name = 23,
-  //}
-
   /*optional EventType*/ type = 9,
-
   /*optional uint64*/ track_uuid = 11,
-
-  // Deprecated. Use the |timestamp| and |timestamp_clock_id| fields in
-  // TracePacket instead.
-  // oneof timestamp {
-
   /*repeated uint64*/ extra_counter_track_uuids = 31,
   /*repeated int64*/ extra_counter_values = 12,
-
-  // Deprecated. Use |extra_counter_values| and |extra_counter_track_uuids| to
-  // encode thread time instead.
-  //
-  // CPU time for the current thread (e.g., CLOCK_THREAD_CPUTIME_ID) in
-  // microseconds.
-  // oneof thread_time {
 };
 
 enum class SequenceFlags {
@@ -229,20 +207,11 @@ enum class SequenceFlags {
 
 enum class TracePacket {
   /*optional uint64*/ timestamp = 8,
-
-  // Specifies the ID of the clock used for the TracePacket |timestamp|. Can be
-  // one of the built-in types from ClockSnapshot::BuiltinClocks, or a
-  // producer-defined clock id.
-  // If unspecified and if no default per-sequence value has been provided via
-  // TracePacketDefaults, it defaults to BuiltinClocks::BOOTTIME.
   /*optional uint32*/ timestamp_clock_id = 58,
   /*TrackEvent*/ track_event = 11,
   /*TrackDescriptor*/ track_descriptor = 60,
-
   /*optional TracePacketDefaults*/ trace_packet_defaults = 59,
-
   /*uint32*/ trusted_packet_sequence_id = 10,
-
   /*optional InternedData*/ interned_data = 12,
   /*optional uint32*/ sequence_flags = 13,
 };
@@ -343,6 +312,23 @@ const char* to_string(event_type t) {
   return nullptr;
 }
 
+const auto& get_interned_data() {
+  static proto::buffer<512> interned_data = []() {
+    proto::buffer<512> event_names;
+    for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
+      proto::buffer<64> event_name;
+      event_name.write(static_cast<uint64_t>(EventName::iid), i);
+      event_name.write(static_cast<uint64_t>(EventName::name), to_string(static_cast<event_type>(i)));
+      event_names.write(static_cast<uint64_t>(InternedData::event_names), event_name);
+    }
+    proto::buffer<512> interned_data;
+    interned_data.write(static_cast<uint64_t>(TracePacket::interned_data), event_names);
+    return interned_data;
+  }();
+
+  return interned_data;
+}
+
 std::atomic<bool> initialized{false};
 std::atomic<int> fd{-1};
 
@@ -358,6 +344,7 @@ auto get_start_time() {
 }
 
 class thread_state {
+  int id;
   proto::buffer<4> track_uuid;
 
   // To minimize contention while writing to the file, we accumulate messages in this local buffer, and
@@ -367,12 +354,7 @@ class thread_state {
   // The previous timestamp emitted on this thread.
   std::chrono::time_point<std::chrono::high_resolution_clock> t0 = get_start_time();
 
-public:
-  thread_state() {
-    int id = next_thread_id++;
-
-    track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), id);
-
+  void write_track_descriptor() {
     // Write the thread descriptor once.
     proto::buffer<4> uuid;
     uuid.write(static_cast<uint64_t>(TrackDescriptor::uuid), id);
@@ -390,11 +372,19 @@ public:
     proto::buffer<256> track_descriptor;
     track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, parent_uuid, name);
 
-    proto::buffer<4096> trace_packet;
+    proto::buffer<256> trace_packet;
     trace_packet.write(trace_packet_tag, track_descriptor, trusted_packet_sequence_id);
 
     write(trace_packet);
   }
+
+public:
+  thread_state() : id(next_thread_id++) {
+    track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), id);
+
+    write_track_descriptor();
+  }
+
   ~thread_state() {
     if (!buffer.empty()) {
       size_t at = file_offset.fetch_add(buffer.size());
@@ -402,8 +392,6 @@ public:
       (void)result;
     }
   }
-
-  const proto::buffer<4>& get_track_uuid() const { return track_uuid; }
 
   void make_timestamp(proto::buffer<16>& timestamp) {
     auto now = std::chrono::high_resolution_clock::now();
@@ -438,7 +426,7 @@ public:
   template <size_t N, typename... TrackEventFields>
   void make_trace_packet(proto::buffer<N>& buf, const proto::buffer<16>& timestamp, const TrackEventFields&... fields) {
     proto::buffer<16> track_event;
-    track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., get_track_uuid());
+    track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., track_uuid);
 
     buf.write(trace_packet_tag, trusted_packet_sequence_id, sequence_flags, track_event, timestamp);
   }
@@ -471,19 +459,9 @@ void write_trace_header() {
   proto::buffer<8> track_descriptor;
   track_descriptor.write(static_cast<uint64_t>(TracePacket::track_descriptor), uuid);
 
-  proto::buffer<4096> event_names;
-  for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
-    proto::buffer<64> event_name;
-    event_name.write(static_cast<uint64_t>(EventName::iid), i);
-    event_name.write(static_cast<uint64_t>(EventName::name), to_string(static_cast<event_type>(i)));
-    event_names.write(static_cast<uint64_t>(InternedData::event_names), event_name);
-  }
-  proto::buffer<4096> interned_data;
-  interned_data.write(static_cast<uint64_t>(TracePacket::interned_data), event_names);
-
-  proto::buffer<4096> trace_packet;
+  proto::buffer<1024> trace_packet;
   trace_packet.write(
-      trace_packet_tag, track_descriptor, interned_data, trusted_packet_sequence_id, sequence_flags_cleared);
+      trace_packet_tag, track_descriptor, get_interned_data(), trusted_packet_sequence_id, sequence_flags_cleared);
 
   size_t at = file_offset.fetch_add(trace_packet.size());
   ssize_t written = pwrite(fd.load(), trace_packet.data(), trace_packet.size(), at);
