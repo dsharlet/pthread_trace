@@ -332,8 +332,6 @@ const auto& get_interned_data() {
 std::atomic<bool> initialized{false};
 std::atomic<int> fd{-1};
 
-std::atomic<size_t> file_offset{0};
-
 std::atomic<int> next_thread_id{0};
 
 constexpr uint64_t root_track_uuid = 0;
@@ -387,8 +385,7 @@ public:
 
   ~thread_state() {
     if (!buffer.empty()) {
-      size_t at = file_offset.fetch_add(buffer.size());
-      ssize_t result = pwrite(fd.load(), buffer.data(), buffer.size(), at);
+      ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
       (void)result;
     }
   }
@@ -407,8 +404,7 @@ public:
       make_timestamp(timestamp);
 
       // Our buffer is full, flush it.
-      size_t at = file_offset.fetch_add(buffer.size());
-      ssize_t result = pwrite(fd.load(), buffer.data(), buffer.size(), at);
+      ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
       (void)result;
       buffer.clear();
 
@@ -463,8 +459,7 @@ void write_trace_header() {
   trace_packet.write(
       trace_packet_tag, track_descriptor, get_interned_data(), trusted_packet_sequence_id, sequence_flags_cleared);
 
-  size_t at = file_offset.fetch_add(trace_packet.size());
-  ssize_t written = pwrite(fd.load(), trace_packet.data(), trace_packet.size(), at);
+  ssize_t written = ::write(fd.load(), trace_packet.data(), trace_packet.size());
   (void)written;
 }
 
