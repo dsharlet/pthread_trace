@@ -247,19 +247,19 @@ enum class TracePacket {
   /*optional uint32*/ sequence_flags = 13,
 };
 
-auto trusted_packet_sequence_id =
+constexpr auto trusted_packet_sequence_id =
     proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), 1);
 
-auto sequence_flags_cleared = proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::sequence_flags),
+constexpr auto sequence_flags_cleared = proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::sequence_flags),
     static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED));
-auto sequence_flags = proto::buffer<2>::make(
+constexpr auto sequence_flags = proto::buffer<2>::make(
     static_cast<uint64_t>(TracePacket::sequence_flags), static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
 
-auto slice_begin =
+constexpr auto slice_begin =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::SLICE_BEGIN));
-auto slice_end =
+constexpr auto slice_end =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::SLICE_END));
-auto instant =
+constexpr auto instant =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::INSTANT));
 
 constexpr uint64_t trace_packet_tag = 1;
@@ -289,35 +289,35 @@ enum class event_type {
   count,
 };
 
-auto event_cond_broadcast = proto::buffer<2>::make(
+constexpr auto event_cond_broadcast = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::cond_broadcast));
-auto event_cond_signal =
+constexpr auto event_cond_signal =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::cond_signal));
-auto event_cond_timedwait = proto::buffer<2>::make(
+constexpr auto event_cond_timedwait = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::cond_timedwait));
-auto event_cond_wait =
+constexpr auto event_cond_wait =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::cond_wait));
-auto event_join =
+constexpr auto event_join =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::join));
-auto event_mutex_lock =
+constexpr auto event_mutex_lock =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_lock));
-auto event_mutex_trylock = proto::buffer<2>::make(
+constexpr auto event_mutex_trylock = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_trylock));
-auto event_mutex_unlock = proto::buffer<2>::make(
+constexpr auto event_mutex_unlock = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_unlock));
-auto event_mutex_locked = proto::buffer<2>::make(
+constexpr auto event_mutex_locked = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_locked));
-auto event_once =
+constexpr auto event_once =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::once));
-auto event_yield =
+constexpr auto event_yield =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::yield));
-auto event_sleep =
+constexpr auto event_sleep =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::sleep));
-auto event_usleep =
+constexpr auto event_usleep =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::usleep));
-auto event_nanosleep =
+constexpr auto event_nanosleep =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::nanosleep));
-auto event_flush =
+constexpr auto event_flush =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::flush));
 
 const char* to_string(event_type t) {
