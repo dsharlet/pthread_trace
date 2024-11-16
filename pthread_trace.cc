@@ -281,6 +281,10 @@ enum class event_type {
   mutex_unlock,
   mutex_locked,
   once,
+  yield,
+  sleep,
+  usleep,
+  nanosleep,
   flush,
   count,
 };
@@ -305,22 +309,34 @@ auto event_mutex_locked = proto::buffer<2>::make(
     static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::mutex_locked));
 auto event_once =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::once));
+auto event_yield =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::yield));
+auto event_sleep =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::sleep));
+auto event_usleep =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::usleep));
+auto event_nanosleep =
+    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::nanosleep));
 auto event_flush =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::flush));
 
 const char* to_string(event_type t) {
   switch (t) {
-  case event_type::cond_broadcast: return "cond_broadcast";
-  case event_type::cond_signal: return "cond_signal";
-  case event_type::cond_timedwait: return "cond_timedwait";
-  case event_type::cond_wait: return "cond_wait";
-  case event_type::join: return "join";
-  case event_type::mutex_lock: return "mutex_lock";
-  case event_type::mutex_trylock: return "mutex_trylock";
-  case event_type::mutex_unlock: return "mutex_unlock";
-  case event_type::mutex_locked: return "mutex_locked";
-  case event_type::once: return "once";
-  case event_type::flush: return "flush";
+  case event_type::cond_broadcast: return "pthread_cond_broadcast";
+  case event_type::cond_signal: return "pthread_cond_signal";
+  case event_type::cond_timedwait: return "pthread_cond_timedwait";
+  case event_type::cond_wait: return "pthread_cond_wait";
+  case event_type::join: return "pthread_join";
+  case event_type::mutex_lock: return "pthread_mutex_lock";
+  case event_type::mutex_trylock: return "pthread_mutex_trylock";
+  case event_type::mutex_unlock: return "pthread_mutex_unlock";
+  case event_type::mutex_locked: return "(mutex locked)";
+  case event_type::once: return "pthread_once";
+  case event_type::yield: return "sched_yield";
+  case event_type::sleep: return "sleep";
+  case event_type::usleep: return "usleep";
+  case event_type::nanosleep: return "nanosleep";
+  case event_type::flush: return "(flush)";
   case event_type::none:
   case event_type::count: break;
   }
@@ -515,6 +531,74 @@ void trace_init() {
 
 extern "C" {
 
+unsigned int sleep(unsigned int secs) {
+  typedef unsigned int (*hook_t)(unsigned int);
+  static hook_t hook = nullptr;
+  if (!hook) {
+    trace_init();
+    hook = (hook_t)dlsym(RTLD_NEXT, "sleep");
+    if (!hook) {
+      fprintf(stderr, "Failed to find sleep\n");
+      exit(1);
+    }
+  }
+  thread_state::get().write_trace_packet(slice_begin, event_sleep);
+  unsigned int result = hook(secs);
+  thread_state::get().write_trace_packet(slice_end);
+  return result;
+}
+
+int usleep(useconds_t usecs) {
+  typedef int (*hook_t)(useconds_t);
+  static hook_t hook = nullptr;
+  if (!hook) {
+    trace_init();
+    hook = (hook_t)dlsym(RTLD_NEXT, "usleep");
+    if (!hook) {
+      fprintf(stderr, "Failed to find usleep\n");
+      exit(1);
+    }
+  }
+  thread_state::get().write_trace_packet(slice_begin, event_usleep);
+  int result = hook(usecs);
+  thread_state::get().write_trace_packet(slice_end);
+  return result;
+}
+
+int nanosleep(const struct timespec* duration, struct timespec* rem) {
+  typedef int (*hook_t)(const struct timespec*, struct timespec*);
+  static hook_t hook = nullptr;
+  if (!hook) {
+    trace_init();
+    hook = (hook_t)dlsym(RTLD_NEXT, "nanosleep");
+    if (!hook) {
+      fprintf(stderr, "Failed to find nanosleep\n");
+      exit(1);
+    }
+  }
+  thread_state::get().write_trace_packet(slice_begin, event_nanosleep);
+  int result = hook(duration, rem);
+  thread_state::get().write_trace_packet(slice_end);
+  return result;
+}
+
+int sched_yield() {
+  typedef int (*hook_t)();
+  static hook_t hook = nullptr;
+  if (!hook) {
+    trace_init();
+    hook = (hook_t)dlsym(RTLD_NEXT, "sched_yield");
+    if (!hook) {
+      fprintf(stderr, "Failed to find sched_yield\n");
+      exit(1);
+    }
+  }
+  thread_state::get().write_trace_packet(slice_begin, event_yield);
+  int result = hook();
+  thread_state::get().write_trace_packet(slice_end);
+  return result;
+}
+
 int pthread_cond_broadcast(pthread_cond_t* cond) {
   typedef int (*hook_t)(pthread_cond_t*);
   static hook_t hook = nullptr;
@@ -527,8 +611,10 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
       exit(1);
     }
   }
-  thread_state::get().write_trace_packet(instant, event_cond_broadcast);
-  return hook(cond);
+  thread_state::get().write_trace_packet(slice_begin, event_cond_broadcast);
+  int result = hook(cond);
+  thread_state::get().write_trace_packet(slice_end);
+  return result;
 }
 
 int pthread_cond_signal(pthread_cond_t* cond) {
@@ -542,8 +628,10 @@ int pthread_cond_signal(pthread_cond_t* cond) {
       exit(1);
     }
   }
-  thread_state::get().write_trace_packet(instant, event_cond_signal);
-  return hook(cond);
+  thread_state::get().write_trace_packet(slice_begin, event_cond_signal);
+  int result = hook(cond);
+  thread_state::get().write_trace_packet(slice_end);
+  return result;
 }
 
 int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime) {

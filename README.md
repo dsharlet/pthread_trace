@@ -16,11 +16,12 @@ Now, navigate to [ui.perfetto.dev](https://ui.perfetto.dev), and load the result
 ## Traced events
 This tool captures the following information:
 - Time threads are blocked in `pthread_mutex_lock`
-- Time threads are blocked in `pthread_cond_wait`/`pthread_cond_timedwait`
+- Time threads are blocked in `pthread_cond_wait`, `pthread_cond_timedwait`
 - Time threads are blocked in `pthread_once`
 - Time threads are blocked in `pthread_join`
-- Time threads hold a mutex (i.e. time between `pthread_mutex_lock`/successful `pthread_mutex_trylock` and `pthread_mutex_unlock`)
-- `pthread_cond_broadcast` and `pthread_cond_signal` events
+- Time yielded via `sched_yield`, `sleep`, `usleep`, `nanosleep`
+- Time threads hold a mutex (i.e. time between `pthread_mutex_lock` or a successful `pthread_mutex_trylock` and `pthread_mutex_unlock`)
+- `pthread_cond_broadcast` and `pthread_cond_signal` calls
 
 ### Examples
 
