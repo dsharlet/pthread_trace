@@ -218,7 +218,7 @@ enum class TracePacket {
 
 constexpr auto sequence_flags_cleared = proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::sequence_flags),
     static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED));
-constexpr auto sequence_flags = proto::buffer<2>::make(
+constexpr auto sequence_flags_needed = proto::buffer<2>::make(
     static_cast<uint64_t>(TracePacket::sequence_flags), static_cast<uint64_t>(SequenceFlags::NEEDS_INCREMENTAL_STATE));
 
 constexpr auto slice_begin =
@@ -374,6 +374,7 @@ class thread_state {
 public:
   thread_state() : id(next_thread_id++), t0(get_start_time()) {
     track_uuid.write(static_cast<uint64_t>(TrackEvent::track_uuid), id);
+    // We can't use sequence id 0, just add one.
     trusted_packet_sequence_id.write(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), id + 1);
 
     write_track_descriptor();
@@ -420,7 +421,7 @@ public:
     proto::buffer<16> track_event;
     track_event.write(static_cast<uint64_t>(TracePacket::track_event), fields..., track_uuid);
 
-    buf.write(trace_packet_tag, trusted_packet_sequence_id, sequence_flags, track_event, timestamp);
+    buf.write(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
   }
 
   template <typename... TrackEventFields>
