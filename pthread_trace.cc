@@ -399,7 +399,8 @@ const auto& get_interned_data() {
   return interned_data;
 }
 
-constexpr size_t block_size = 1024 * 32;
+constexpr size_t block_size_kb = 32;
+constexpr size_t block_size = block_size_kb * 1024;
 
 class circular_file {
   int fd = 0;
@@ -637,10 +638,11 @@ void init_trace() {
 
   real_once(&init_once, []() {
     const char* path = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
-    size_t buffer_size = atoi(getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536"));
-    size_t blocks = buffer_size * 1024 / block_size;
+    const char* buffer_size_str = getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536");
+    int buffer_size_kb = atoi(buffer_size_str);
+    int blocks = (buffer_size_kb + block_size_kb - 1) / block_size_kb;
     if (blocks < 0) {
-      fprintf(stderr, "pthread_trace: buffer is empty.\n");
+      fprintf(stderr, "pthread_trace: invalid buffer size %d (%s).\n", buffer_size_kb, buffer_size_str);
     }
 
     file = std::make_unique<circular_file>(path, blocks);
