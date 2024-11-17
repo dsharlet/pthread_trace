@@ -22,6 +22,8 @@
 #include <mutex>
 #include <thread>
 
+#define NOINLINE __attribute__((noinline))
+
 namespace {
 
 size_t sum() { return 0; }
@@ -500,7 +502,7 @@ public:
   }
 };
 
-void trace_init() {
+void init_trace() {
   if (initialized) {
     return;
   }
@@ -537,6 +539,20 @@ void trace_init() {
   }
 }
 
+template <typename T>
+NOINLINE void init_hook(T& hook, const char* name, const char* version = nullptr) {
+  init_trace();
+  if (version) {
+    hook = (T)dlvsym(RTLD_NEXT, name, version);
+  } else {
+    hook = (T)dlsym(RTLD_NEXT, name);
+  }
+  if (!hook) {
+    fprintf(stderr, "Failed to find %s\n", name);
+    exit(1);
+  }
+}
+
 }  // namespace
 
 extern "C" {
@@ -544,14 +560,7 @@ extern "C" {
 unsigned int sleep(unsigned int secs) {
   typedef unsigned int (*hook_t)(unsigned int);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "sleep");
-    if (!hook) {
-      fprintf(stderr, "Failed to find sleep\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "sleep");
   thread_state::get().write_trace_packet(slice_begin, event_sleep);
   unsigned int result = hook(secs);
   thread_state::get().write_trace_packet(slice_end);  // event_sleep
@@ -561,14 +570,7 @@ unsigned int sleep(unsigned int secs) {
 int usleep(useconds_t usecs) {
   typedef int (*hook_t)(useconds_t);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "usleep");
-    if (!hook) {
-      fprintf(stderr, "Failed to find usleep\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "usleep");
   thread_state::get().write_trace_packet(slice_begin, event_usleep);
   int result = hook(usecs);
   thread_state::get().write_trace_packet(slice_end);  // event_usleep
@@ -578,14 +580,7 @@ int usleep(useconds_t usecs) {
 int nanosleep(const struct timespec* duration, struct timespec* rem) {
   typedef int (*hook_t)(const struct timespec*, struct timespec*);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "nanosleep");
-    if (!hook) {
-      fprintf(stderr, "Failed to find nanosleep\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "nanosleep");
   thread_state::get().write_trace_packet(slice_begin, event_nanosleep);
   int result = hook(duration, rem);
   thread_state::get().write_trace_packet(slice_end);  // event_nanosleep
@@ -595,14 +590,7 @@ int nanosleep(const struct timespec* duration, struct timespec* rem) {
 int sched_yield() {
   typedef int (*hook_t)();
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "sched_yield");
-    if (!hook) {
-      fprintf(stderr, "Failed to find sched_yield\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "sched_yield");
   thread_state::get().write_trace_packet(slice_begin, event_yield);
   int result = hook();
   thread_state::get().write_trace_packet(slice_end);  // event_yield
@@ -612,15 +600,7 @@ int sched_yield() {
 int pthread_cond_broadcast(pthread_cond_t* cond) {
   typedef int (*hook_t)(pthread_cond_t*);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    // TODO: properly handle different versions.
-    hook = (hook_t)dlvsym(RTLD_NEXT, "pthread_cond_broadcast", "GLIBC_2.3.2");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_cond_broadcast\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_cond_broadcast", "GLIBC_2.3.2");
   thread_state::get().write_trace_packet(slice_begin, event_cond_broadcast);
   int result = hook(cond);
   thread_state::get().write_trace_packet(slice_end);  // event_cond_broadcast
@@ -630,14 +610,7 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
 int pthread_cond_signal(pthread_cond_t* cond) {
   typedef int (*hook_t)(pthread_cond_t*);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlvsym(RTLD_NEXT, "pthread_cond_signal", "GLIBC_2.3.2");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_cond_signal\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_cond_signal", "GLIBC_2.3.2");
   thread_state::get().write_trace_packet(slice_begin, event_cond_signal);
   int result = hook(cond);
   thread_state::get().write_trace_packet(slice_end);  // event_cond_signal
@@ -647,14 +620,7 @@ int pthread_cond_signal(pthread_cond_t* cond) {
 int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime) {
   typedef int (*hook_t)(pthread_cond_t*, pthread_mutex_t*, const struct timespec*);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlvsym(RTLD_NEXT, "pthread_cond_timedwait", "GLIBC_2.3.2");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_cond_timedwait\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_cond_timedwait", "GLIBC_2.3.2");
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = thread_state::get();
   t.write_trace_packet(slice_end);  // event_mutex_locked
@@ -668,14 +634,7 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
 int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
   typedef int (*hook_t)(pthread_cond_t*, pthread_mutex_t*);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlvsym(RTLD_NEXT, "pthread_cond_wait", "GLIBC_2.3.2");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_cond_wait\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_cond_wait", "GLIBC_2.3.2");
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = thread_state::get();
   t.write_trace_packet(slice_end);  // event_mutex_locked
@@ -689,14 +648,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
 int pthread_join(pthread_t thread, void** value_ptr) {
   typedef int (*hook_t)(pthread_t, void**);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "pthread_join");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_join\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_join");
   auto& t = thread_state::get();
   t.write_trace_packet(slice_begin, event_join);
   int result = hook(thread, value_ptr);
@@ -707,14 +659,7 @@ int pthread_join(pthread_t thread, void** value_ptr) {
 int pthread_mutex_lock(pthread_mutex_t* mutex) {
   typedef int (*hook_t)(pthread_mutex_t*);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "pthread_mutex_lock");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_mutex_lock\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_mutex_lock");
   auto& t = thread_state::get();
   t.write_trace_packet(slice_begin, event_mutex_lock);
   int result = hook(mutex);
@@ -726,14 +671,7 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
 int pthread_mutex_trylock(pthread_mutex_t* mutex) {
   typedef int (*hook_t)(pthread_mutex_t*);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "pthread_mutex_trylock");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_mutex_trylock\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_mutex_trylock");
   auto& t = thread_state::get();
   t.write_trace_packet(slice_begin, event_mutex_trylock);
   int result = hook(mutex);
@@ -747,14 +685,7 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
 int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   typedef int (*hook_t)(pthread_mutex_t*);
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "pthread_mutex_unlock");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_mutex_unlock\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_mutex_unlock");
 
   // It makes some sense that we should report the mutex as locked until this returns.
   // However, it seems that other threads are able to lock the mutex well before pthread_mutex_unlock returns, so this
@@ -770,14 +701,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
 int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
   typedef int (*hook_t)(pthread_once_t*, void (*)());
   static hook_t hook = nullptr;
-  if (!hook) {
-    trace_init();
-    hook = (hook_t)dlsym(RTLD_NEXT, "pthread_once");
-    if (!hook) {
-      fprintf(stderr, "Failed to find pthread_once\n");
-      exit(1);
-    }
-  }
+  if (!hook) init_hook(hook, "pthread_once");
   auto& t = thread_state::get();
   t.write_trace_packet(slice_begin, event_once);
   int result = hook(once_control, init_routine);
