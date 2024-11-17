@@ -439,18 +439,14 @@ public:
   thread_state() : id(next_thread_id++), t0(std::chrono::high_resolution_clock::now()) {
     track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
     // We can't use sequence id 0, just add one.
-    trusted_packet_sequence_id.write_tagged(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(id + 1));
+    trusted_packet_sequence_id.write_tagged(
+        static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(id + 1));
 
     write_track_descriptor();
     write_clock_snapshot();
   }
 
-  ~thread_state() {
-    if (!buffer.empty()) {
-      ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
-      (void)result;
-    }
-  }
+  ~thread_state() { flush(); }
 
   void make_timestamp(proto::buffer<16>& timestamp) {
     auto now = std::chrono::high_resolution_clock::now();
@@ -476,6 +472,7 @@ public:
     write_trace_packet_with_timestamp(timestamp, slice_begin, event_flush);
     write_trace_packet(slice_end);
   }
+  void flush() { flush(buffer.capacity()); }
 
   template <size_t TimestampSize, typename... TrackEventFields>
   void write_trace_packet_with_timestamp(
