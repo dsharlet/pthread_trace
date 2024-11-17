@@ -399,7 +399,7 @@ const auto& get_interned_data() {
   return interned_data;
 }
 
-constexpr size_t block_size = 1024 * 4;
+constexpr size_t block_size = 1024 * 32;
 
 class circular_file {
   int fd;
@@ -466,7 +466,12 @@ public:
 circular_file file;
 
 constexpr uint64_t clock_id = 64;
-constexpr size_t message_capacity = 64;
+
+// We want to avoid flushing blocks with open slices, because dropped blocks could result in unclosed slices.
+// This is not something we can do with 100% reliability, but we can approximate it in most cases by assuming
+// there are no more than `max_depth` slices open at once.
+constexpr size_t max_depth = 8;
+constexpr size_t message_capacity = 32;
 
 static std::atomic<int> next_thread_id{0};
 static std::atomic<int> next_sequence_id{1};
@@ -529,7 +534,6 @@ class thread_state {
   }
 
   void write_sequence_header() {
-    t0 = std::chrono::high_resolution_clock::now();
     trusted_packet_sequence_id.clear();
     trusted_packet_sequence_id.write_tagged(
         static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(next_sequence_id++));
@@ -549,8 +553,31 @@ class thread_state {
     }
   }
 
+  uint64_t delta_timestamp() {
+    auto now = std::chrono::high_resolution_clock::now();
+    uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count();
+    t0 = now;
+    return delta;
+  }
+
+  void make_delta_timestamp(proto::buffer<16>& timestamp) {
+    timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta_timestamp());
+  }
+
+  template <size_t TimestampSize, typename EventField>
+  void write_begin_with_delta(size_t flush_capacity, const proto::buffer<TimestampSize>& timestamp, const EventField& field) {
+    flush(flush_capacity);
+
+    proto::buffer<16> track_event;
+    track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_begin, field, track_uuid);
+
+    // Write the trace packet directly into the buffer to avoid a memcpy from a temporary protobuf.
+    buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
+  }
+
 public:
   thread_state() : id(next_thread_id++) {
+    t0 = std::chrono::high_resolution_clock::now();
     track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
 
     write_sequence_header();
@@ -558,31 +585,33 @@ public:
 
   ~thread_state() { flush(buffer.capacity()); }
 
-  void make_timestamp(proto::buffer<16>& timestamp) {
-    auto now = std::chrono::high_resolution_clock::now();
-    uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count();
-    timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta);
-    t0 = now;
+
+  template <size_t TimestampSize, typename EventField>
+  void write_begin_with_delta(const proto::buffer<TimestampSize>& timestamp, const EventField& field) {
+    // Avoid flushing because delta 0 timestamps should go in the same block if possible.
+    constexpr size_t flush_capacity = message_capacity;
+    write_begin_with_delta(flush_capacity, timestamp, field);
   }
 
-  template <size_t TimestampSize, typename... TrackEventFields>
-  void write_trace_packet_with_timestamp(int buffer_capacity,
-      const proto::buffer<TimestampSize>& timestamp, const TrackEventFields&... fields) {
-    proto::buffer<16> track_event;
-    track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), fields..., track_uuid);
-
-    // Write the trace packet directly into the buffer to avoid a memcpy from a temporary protobuf.
-    flush(buffer_capacity);
-    buffer.write_tagged(
-        trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
-  }
-
-  template <typename... TrackEventFields>
-  void write_trace_packet(int buffer_capacity, const TrackEventFields&... fields) {
+  template <typename EventField>
+  void write_begin(const EventField& field) {
     proto::buffer<16> timestamp;
-    make_timestamp(timestamp);
+    make_delta_timestamp(timestamp);
 
-    write_trace_packet_with_timestamp(buffer_capacity, timestamp, fields...);
+    constexpr size_t flush_capacity = max_depth * message_capacity;
+    write_begin_with_delta(flush_capacity, timestamp, field);
+  }
+
+  void write_end() {
+    flush(message_capacity);
+
+    proto::buffer<16> timestamp;
+    make_delta_timestamp(timestamp);
+
+    proto::buffer<16> track_event;
+    track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_end, track_uuid);
+
+    buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
   }
 
   static thread_state& get() {
@@ -661,9 +690,9 @@ unsigned int sleep(unsigned int secs) {
   if (!hooks::sleep) hooks::init(hooks::sleep, "sleep");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_sleep);
+  t.write_begin(event_sleep);
   unsigned int result = hooks::sleep(secs);
-  t.write_trace_packet(0, slice_end);  // event_sleep
+  t.write_end();  // event_sleep
   return result;
 }
 
@@ -671,9 +700,9 @@ int usleep(useconds_t usecs) {
   if (!hooks::usleep) hooks::init(hooks::usleep, "usleep");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_usleep);
+  t.write_begin(event_usleep);
   int result = hooks::usleep(usecs);
-  t.write_trace_packet(0, slice_end);  // event_usleep
+  t.write_end();  // event_usleep
   return result;
 }
 
@@ -681,9 +710,9 @@ int nanosleep(const struct timespec* duration, struct timespec* rem) {
   if (!hooks::nanosleep) hooks::init(hooks::nanosleep, "nanosleep");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_nanosleep);
+  t.write_begin(event_nanosleep);
   int result = hooks::nanosleep(duration, rem);
-  t.write_trace_packet(0, slice_end);  // event_nanosleep
+  t.write_end();  // event_nanosleep
   return result;
 }
 
@@ -691,9 +720,9 @@ int sched_yield() {
   if (!hooks::sched_yield) hooks::init(hooks::sched_yield, "sched_yield");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_yield);
+  t.write_begin(event_yield);
   int result = hooks::sched_yield();
-  t.write_trace_packet(0, slice_end);  // event_yield
+  t.write_end();  // event_yield
   return result;
 }
 
@@ -702,9 +731,9 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
     hooks::init(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_cond_broadcast);
+  t.write_begin(event_cond_broadcast);
   int result = hooks::pthread_cond_broadcast(cond);
-  t.write_trace_packet(0, slice_end);  // event_cond_broadcast
+  t.write_end();  // event_cond_broadcast
   return result;
 }
 
@@ -712,9 +741,9 @@ int pthread_cond_signal(pthread_cond_t* cond) {
   if (!hooks::pthread_cond_signal) hooks::init(hooks::pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_cond_signal);
+  t.write_begin(event_cond_signal);
   int result = hooks::pthread_cond_signal(cond);
-  t.write_trace_packet(0, slice_end);  // event_cond_signal
+  t.write_end();  // event_cond_signal
   return result;
 }
 
@@ -724,11 +753,11 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = thread_state::get();
-  t.write_trace_packet(0, slice_end);  // event_mutex_locked
-  t.write_trace_packet_with_timestamp(message_capacity * 2, timestamp_zero, slice_begin, event_cond_timedwait);
+  t.write_end();  // event_mutex_locked
+  t.write_begin_with_delta(timestamp_zero, event_cond_timedwait);
   int result = hooks::pthread_cond_timedwait(cond, mutex, abstime);
-  t.write_trace_packet(0, slice_end);  // event_cond_timedwait
-  t.write_trace_packet_with_timestamp(message_capacity * 2, timestamp_zero, slice_begin, event_mutex_locked);
+  t.write_end();  // event_cond_timedwait
+  t.write_begin_with_delta(timestamp_zero, event_mutex_locked);
   return result;
 }
 
@@ -737,11 +766,11 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = thread_state::get();
-  t.write_trace_packet(0, slice_end);  // event_mutex_locked
-  t.write_trace_packet_with_timestamp(message_capacity * 2, timestamp_zero, slice_begin, event_cond_wait);
+  t.write_end();  // event_mutex_locked
+  t.write_begin_with_delta(timestamp_zero, event_cond_wait);
   int result = hooks::pthread_cond_wait(cond, mutex);
-  t.write_trace_packet(0, slice_end);  // event_cond_wait
-  t.write_trace_packet_with_timestamp(message_capacity * 2, timestamp_zero, slice_begin, event_mutex_locked);
+  t.write_end();  // event_cond_wait
+  t.write_begin_with_delta(timestamp_zero, event_mutex_locked);
   return result;
 }
 
@@ -749,9 +778,9 @@ int pthread_join(pthread_t thread, void** value_ptr) {
   if (!hooks::pthread_join) hooks::init(hooks::pthread_join, "pthread_join");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_join);
+  t.write_begin(event_join);
   int result = hooks::pthread_join(thread, value_ptr);
-  t.write_trace_packet(0, slice_end);  // event_join
+  t.write_end();  // event_join
   return result;
 }
 
@@ -759,10 +788,10 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
   if (!hooks::pthread_mutex_lock) hooks::init(hooks::pthread_mutex_lock, "pthread_mutex_lock");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_mutex_lock);
+  t.write_begin(event_mutex_lock);
   int result = hooks::pthread_mutex_lock(mutex);
-  t.write_trace_packet(0, slice_end);  // event_mutex_lock
-  t.write_trace_packet_with_timestamp(message_capacity * 2, timestamp_zero, slice_begin, event_mutex_locked);
+  t.write_end();  // event_mutex_lock
+  t.write_begin_with_delta(timestamp_zero, event_mutex_locked);
   return result;
 }
 
@@ -770,11 +799,11 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
   if (!hooks::pthread_mutex_trylock) hooks::init(hooks::pthread_mutex_trylock, "pthread_mutex_trylock");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_mutex_trylock);
+  t.write_begin(event_mutex_trylock);
   int result = hooks::pthread_mutex_trylock(mutex);
-  t.write_trace_packet(0, slice_end);  // event_mutex_trylock
+  t.write_end();  // event_mutex_trylock
   if (result == 0) {
-    t.write_trace_packet_with_timestamp(message_capacity * 2, timestamp_zero, slice_begin, event_mutex_locked);
+    t.write_begin_with_delta(timestamp_zero, event_mutex_locked);
   }
   return result;
 }
@@ -786,10 +815,10 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   // However, it seems that other threads are able to lock the mutex well before pthread_mutex_unlock returns, so this
   // results in confusing traces.
   auto& t = thread_state::get();
-  t.write_trace_packet(0, slice_end);  // event_mutex_locked
-  t.write_trace_packet_with_timestamp(message_capacity * 2, timestamp_zero, slice_begin, event_mutex_unlock);
+  t.write_end();  // event_mutex_locked
+  t.write_begin_with_delta(timestamp_zero, event_mutex_unlock);
   int result = hooks::pthread_mutex_unlock(mutex);
-  t.write_trace_packet(0, slice_end);  // event_mutex_unlock
+  t.write_end();  // event_mutex_unlock
   return result;
 }
 
@@ -797,9 +826,9 @@ int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
   if (!hooks::pthread_once) hooks::init(hooks::pthread_once, "pthread_once");
 
   auto& t = thread_state::get();
-  t.write_trace_packet(message_capacity * 2, slice_begin, event_once);
+  t.write_begin(event_once);
   int result = hooks::pthread_once(once_control, init_routine);
-  t.write_trace_packet(0, slice_end);  // event_once
+  t.write_end();  // event_once
   return result;
 }
 
