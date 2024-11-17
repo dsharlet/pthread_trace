@@ -44,4 +44,4 @@ The size of the trace file circular buffer can be controlled with the `PTHREAD_T
 ## Tracing overhead
 While this project makes some effort to reduce tracing overhead, even very lightweight tracing will be significant compared to uncontended thread synchronization primitives.
 It is possible (likely even) that enabling this tracing tool will alter the behavior of programs using pthreads.
-It might only slow the program down, but it might also dramatically alter the behavior of synchronization primitives.
+It might only slow the program down, but it could dramatically alter the behavior of synchronization primitives.

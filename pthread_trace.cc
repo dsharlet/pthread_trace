@@ -466,12 +466,6 @@ std::unique_ptr<circular_file> file;
 
 constexpr uint64_t clock_id = 64;
 
-// We want to avoid flushing blocks with open slices, because dropped blocks could result in unclosed slices.
-// This is not something we can do with 100% reliability, but we can approximate it in most cases by assuming
-// there are no more than `max_depth` slices open at once.
-constexpr size_t max_depth = 8;
-constexpr size_t message_capacity = 32;
-
 static std::atomic<int> next_thread_id{0};
 static std::atomic<int> next_sequence_id{1};
 
@@ -543,7 +537,7 @@ class thread_state {
   }
 
   void flush(size_t size) {
-    constexpr size_t padding_capacity = 5;
+    constexpr size_t padding_capacity = 2;
     if (buffer.size() + size + padding_capacity >= block_size) {
       buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
       assert(buffer.size() == block_size);
@@ -565,10 +559,25 @@ class thread_state {
     timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta);
   }
 
+public:
+  thread_state() : id(next_thread_id++) {
+    track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
+
+    write_sequence_header();
+  }
+
+  ~thread_state() {
+    if (buffer.size() > 0) {
+      buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
+      assert(buffer.size() == block_size);
+      file->write_block(buffer.data());
+    }
+  }
+
   template <size_t TimestampSize, typename EventField>
-  void write_begin_with_delta(
-      size_t flush_capacity, const proto::buffer<TimestampSize>& timestamp, const EventField& field) {
-    flush(flush_capacity);
+  void write_begin_with_delta(const proto::buffer<TimestampSize>& timestamp, const EventField& field) {
+    constexpr size_t message_capacity = 32;
+    flush(message_capacity);
 
     proto::buffer<16> track_event;
     track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_begin, field, track_uuid);
@@ -577,32 +586,16 @@ class thread_state {
     buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
   }
 
-public:
-  thread_state() : id(next_thread_id++) {
-    track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
-
-    write_sequence_header();
-  }
-
-  ~thread_state() { flush(buffer.capacity()); }
-
-  template <size_t TimestampSize, typename EventField>
-  void write_begin_with_delta(const proto::buffer<TimestampSize>& timestamp, const EventField& field) {
-    // Avoid flushing because delta 0 timestamps should go in the same block if possible.
-    constexpr size_t flush_capacity = message_capacity;
-    write_begin_with_delta(flush_capacity, timestamp, field);
-  }
-
   template <typename EventField>
   void write_begin(const EventField& field) {
     proto::buffer<16> timestamp;
     make_delta_timestamp(timestamp);
 
-    constexpr size_t flush_capacity = max_depth * message_capacity;
-    write_begin_with_delta(flush_capacity, timestamp, field);
+    write_begin_with_delta(timestamp, field);
   }
 
   void write_end() {
+    constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
     proto::buffer<16> timestamp;
