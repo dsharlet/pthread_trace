@@ -524,7 +524,7 @@ class thread_state {
         trusted_packet_sequence_id, sequence_flags_cleared);
   }
 
-  void write_sequence_header() {
+  NOINLINE void write_sequence_header() {
     t0 = std::chrono::high_resolution_clock::now();
     trusted_packet_sequence_id.clear();
     trusted_packet_sequence_id.write_tagged(
@@ -534,14 +534,18 @@ class thread_state {
     write_clock_snapshot();
   }
 
+  NOINLINE void flush() {
+    buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
+    assert(buffer.size() == block_size);
+    file->write_block(buffer.data());
+    buffer.clear();
+    write_sequence_header();
+  }
+
   void flush(size_t size) {
     constexpr size_t padding_capacity = 2;
     if (buffer.size() + size + padding_capacity >= block_size) {
-      buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
-      assert(buffer.size() == block_size);
-      file->write_block(buffer.data());
-      buffer.clear();
-      write_sequence_header();
+      flush();
     }
   }
 
@@ -618,7 +622,7 @@ const char* getenv_or(const char* env, const char* def) {
 
 pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
-void init_trace() {
+NOINLINE void init_trace() {
   // Use the real pthread_once to handle initialization.
   typedef int (*once_fn_t)(pthread_once_t*, void (*)());
   once_fn_t real_once = (once_fn_t)dlsym(RTLD_NEXT, "pthread_once");
