@@ -454,9 +454,7 @@ public:
     }
   }
 
-  ~circular_file() {
-    close();
-  }
+  ~circular_file() { close(); }
 
   void write_block(const uint8_t* data) {
     size_t offset = next_.fetch_add(block_size) % size_;
@@ -535,6 +533,7 @@ class thread_state {
   }
 
   void write_sequence_header() {
+    t0 = std::chrono::high_resolution_clock::now();
     trusted_packet_sequence_id.clear();
     trusted_packet_sequence_id.write_tagged(
         static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(next_sequence_id++));
@@ -554,15 +553,16 @@ class thread_state {
     }
   }
 
-  uint64_t delta_timestamp() {
-    auto now = std::chrono::high_resolution_clock::now();
-    uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count();
-    t0 = now;
-    return delta;
-  }
-
   void make_delta_timestamp(proto::buffer<16>& timestamp) {
-    timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta_timestamp());
+    // For some reason I haven't been able to figure out, timestamps can get out of order when crossing block
+    // boundaries. We can fix this by subtracting a small error from the timestamp deltas we emit. Error accumulates
+    // within each block. However, at block boundaries, we reset the incremental timestamps to the global absolute time,
+    // so the error accumulation is limited.
+    constexpr uint64_t fudge_time_ns = 1;
+    auto now = std::chrono::high_resolution_clock::now();
+    uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count() - fudge_time_ns;
+    t0 = now;
+    timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta);
   }
 
   template <size_t TimestampSize, typename EventField>
@@ -579,7 +579,6 @@ class thread_state {
 
 public:
   thread_state() : id(next_thread_id++) {
-    t0 = std::chrono::high_resolution_clock::now();
     track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
 
     write_sequence_header();
