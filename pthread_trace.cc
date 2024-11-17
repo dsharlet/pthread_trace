@@ -9,6 +9,7 @@
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -41,6 +42,41 @@ enum class wire_type {
   i32 = 5,
 };
 
+size_t write_varint(uint8_t* dst, uint64_t value) {
+  constexpr uint8_t continuation = 0x80;
+  // clang-format on
+  size_t result = 0;
+  while (value > 0x7f) {
+    dst[result++] = static_cast<uint8_t>(value | continuation);
+    value >>= 7;
+  }
+  dst[result++] = static_cast<uint8_t>(value);
+  return result;
+}
+
+size_t write_tag(uint8_t* dst, uint64_t tag, wire_type type) {
+  return write_varint(dst, (tag << 3) | static_cast<uint64_t>(type));
+}
+
+size_t write_padding(uint8_t* dst, uint64_t tag, uint64_t size) {
+  size_t result = write_tag(dst, tag, wire_type::len);
+  dst += result;
+  assert(size >= result);
+  size -= result;
+  // We need to write a size that includes the bytes occupied by itself, which is tricky.
+  // Trial and error seems like the way to go.
+  for (size_t attempt = 1; attempt < 10; ++attempt) {
+    size_t actual = write_varint(dst, size - attempt);
+    if (actual != attempt) {
+      // We didn't guess the varint size correctly, try again.
+      continue;
+    }
+    return result + size;
+  }
+  assert(false);
+  return result;
+}
+
 // Writing protobufs is a bit tricky, because you need to know the size of child messages before writing the parent
 // message header. The approach used here is to use fixed size stack buffers for everything, and just copy them into
 // nested buffers after constructing them (so we know the size). This approach would be bad for deeply nested protos,
@@ -52,14 +88,7 @@ class buffer {
 
   // varint is 7 bits at a time, with the MSB indicating if there is another 7
   // bits remaining.
-  void write_varint(uint64_t value) {
-    constexpr uint8_t continuation = 0x80;
-    while (value > 0x7f) {
-      buf_[size_++] = static_cast<uint8_t>(value | continuation);
-      value >>= 7;
-    }
-    buf_[size_++] = static_cast<uint8_t>(value);
-  }
+  void write_varint(uint64_t value) { size_ += proto::write_varint(&buf_[size_], value); }
 
   // sint uses "zigzag" encoding: positive x -> 2*x, negative x -> -2*x - 1
   // void write_varint(buffer& buf, int64_t value) {
@@ -139,6 +168,8 @@ public:
   //   write_tag(tag, wire_type::varint);
   //   write_varint(value);
   // }
+
+  void write_tagged_padding(uint64_t tag, uint64_t size) { size_ += write_padding(&buf_[size_], tag, size); }
 
   void write_tagged(uint64_t tag, const char* str) {
     write_tag(tag, wire_type::len);
@@ -287,7 +318,6 @@ enum class event_type {
   sleep,
   usleep,
   nanosleep,
-  flush,
   count,
 };
 
@@ -319,8 +349,6 @@ constexpr auto event_usleep =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::usleep));
 constexpr auto event_nanosleep =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::nanosleep));
-constexpr auto event_flush =
-    proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::name_iid), static_cast<uint64_t>(event_type::flush));
 
 constexpr auto timestamp_zero =
     proto::buffer<2>::make(static_cast<uint64_t>(TracePacket::timestamp), static_cast<uint64_t>(0));
@@ -341,7 +369,6 @@ const char* to_string(event_type t) {
   case event_type::sleep: return "sleep";
   case event_type::usleep: return "usleep";
   case event_type::nanosleep: return "nanosleep";
-  case event_type::flush: return "(flush)";
   case event_type::none:
   case event_type::count: break;
   }
@@ -365,20 +392,83 @@ const auto& get_interned_data() {
   return interned_data;
 }
 
-int fd = -1;
+constexpr size_t block_size = 1024 * 4;
 
-std::atomic<int> next_thread_id{0};
+class circular_file {
+  int fd;
+  uint8_t* buffer_;
+  size_t size_;
+  size_t blocks_;
+
+  std::atomic<bool>* allocated_;
+
+  std::atomic<size_t> next_;
+
+public:
+  void open(const char* path, size_t blocks) {
+    // Don't use O_TRUNC here, it might truncate the file after we started writing it from another thread.
+    fd = ::open(path, O_CREAT | O_RDWR | O_TRUNC, S_IRWXU);
+    if (fd < 0) {
+      fprintf(stderr, "Error opening file '%s': %s\n", path, strerror(errno));
+      exit(1);
+    }
+
+    blocks_ = blocks;
+    size_ = block_size * blocks;
+    int result = ftruncate(fd, size_);
+    if (result < 0) {
+      close();
+      fprintf(stderr, "Error allocating space in file '%s': %s\n", path, strerror(errno));
+      exit(1);
+    }
+
+    buffer_ = static_cast<uint8_t*>(mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    if (buffer_ == (void*)-1) {
+      close();
+      fprintf(stderr, "Error mapping file '%s': %s\n", path, strerror(errno));
+      exit(1);
+    }
+    next_ = 0;
+
+    allocated_ = new std::atomic<bool>[blocks];
+    memset(allocated_, 0, blocks * sizeof(std::atomic<bool>));
+
+    // Initialize all the blocks with padding.
+    for (size_t i = 0; i < size_; i += block_size) {
+      proto::write_padding(buffer_ + i, 2, block_size);
+    }
+  }
+
+  void close() {
+    if (buffer_) {
+      munmap(buffer_, size_);
+      buffer_ = nullptr;
+    }
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
+    }
+  }
+
+  void write_block(const uint8_t* data) {
+    size_t offset = next_.fetch_add(block_size) % size_;
+    memcpy(buffer_ + offset, data, block_size);
+  }
+};
+
+circular_file file;
 
 constexpr uint64_t clock_id = 64;
+
+static std::atomic<int> next_thread_id{0};
+static std::atomic<int> next_sequence_id{1};
 
 class thread_state {
   int id;
   proto::buffer<4> track_uuid;
   proto::buffer<4> trusted_packet_sequence_id;
 
-  // To minimize contention while writing to the file, we accumulate messages in this local buffer, and
-  // flush it to the file when its full.
-  proto::buffer<1024 * 64> buffer;
+  proto::buffer<block_size> buffer;
 
   // The previous timestamp emitted on this thread.
   std::chrono::time_point<std::chrono::high_resolution_clock> t0;
@@ -436,18 +526,34 @@ class thread_state {
     buffer.write(trace_packet);
   }
 
-public:
-  thread_state() : id(next_thread_id++), t0(std::chrono::high_resolution_clock::now()) {
-    track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
-    // We can't use sequence id 0, just add one.
+  void write_sequence_header() {
+    t0 = std::chrono::high_resolution_clock::now();
+    trusted_packet_sequence_id.clear();
     trusted_packet_sequence_id.write_tagged(
-        static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(id + 1));
+        static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(next_sequence_id++));
 
     write_track_descriptor();
     write_clock_snapshot();
   }
 
-  ~thread_state() { flush(); }
+  void flush(size_t size) {
+    if (buffer.size() + size + 8 >= block_size) {
+      buffer.write_tagged_padding(2, block_size - buffer.size());
+      assert(buffer.size() == block_size);
+      file.write_block(buffer.data());
+      buffer.clear();
+      write_sequence_header();
+    }
+  }
+
+public:
+  thread_state() : id(next_thread_id++) {
+    track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
+
+    write_sequence_header();
+  }
+
+  ~thread_state() { flush(buffer.capacity()); }
 
   void make_timestamp(proto::buffer<16>& timestamp) {
     auto now = std::chrono::high_resolution_clock::now();
@@ -456,25 +562,6 @@ public:
     t0 = now;
   }
 
-  void flush(size_t size) {
-    if (size + buffer.size() <= buffer.capacity()) {
-      return;
-    }
-    // We can't write the flush slice before we flush, so get the timestamp now.
-    proto::buffer<16> timestamp;
-    make_timestamp(timestamp);
-
-    // Our buffer is full, flush it.
-    ssize_t result = ::write(fd, buffer.data(), buffer.size());
-    (void)result;
-    buffer.clear();
-
-    // Now write the two flush events, using the timestamp from above.
-    write_trace_packet_with_timestamp(timestamp, slice_begin, event_flush);
-    write_trace_packet(slice_end);
-  }
-  void flush() { flush(buffer.capacity()); }
-
   template <size_t TimestampSize, typename... TrackEventFields>
   void write_trace_packet_with_timestamp(
       const proto::buffer<TimestampSize>& timestamp, const TrackEventFields&... fields) {
@@ -482,9 +569,9 @@ public:
     track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), fields..., track_uuid);
 
     // Write the trace packet directly into the buffer to avoid a memcpy from a temporary protobuf.
-    // Flush to make sure we have enough space in the buffer.
-    flush(32);
-    buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
+    flush(64);
+    buffer.write_tagged(
+        trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
   }
 
   template <typename... TrackEventFields>
@@ -501,6 +588,11 @@ public:
   }
 };
 
+int getenv_or(const char* env, int def) {
+  const char* s = getenv(env);
+  return s ? std::atoi(s) : def;
+}
+
 pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
 void init_trace() {
@@ -513,13 +605,9 @@ void init_trace() {
     if (!path) {
       path = "pthread_trace.proto";
     }
+    size_t buffer_size = getenv_or("PTHREAD_TRACE_BUFFER_SIZE", 1024 * 1024 * 64);
 
-    fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, S_IRWXU);
-    if (fd < 0) {
-      fprintf(stderr, "Error opening file '%s': %s\n", path, strerror(errno));
-      exit(1);
-    }
-
+    file.open(path, buffer_size / block_size);
     fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
   });
 }
@@ -607,7 +695,8 @@ int sched_yield() {
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond) {
-  if (!hooks::pthread_cond_broadcast) hooks::init(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
+  if (!hooks::pthread_cond_broadcast)
+    hooks::init(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
 
   auto& t = thread_state::get();
   t.write_trace_packet(slice_begin, event_cond_broadcast);
@@ -627,7 +716,8 @@ int pthread_cond_signal(pthread_cond_t* cond) {
 }
 
 int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime) {
-  if (!hooks::pthread_cond_timedwait) hooks::init(hooks::pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
+  if (!hooks::pthread_cond_timedwait)
+    hooks::init(hooks::pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = thread_state::get();
