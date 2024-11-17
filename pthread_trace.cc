@@ -365,8 +365,7 @@ const auto& get_interned_data() {
   return interned_data;
 }
 
-std::atomic<bool> initialized{false};
-std::atomic<int> fd{-1};
+int fd = -1;
 
 std::atomic<int> next_thread_id{0};
 
@@ -466,7 +465,7 @@ public:
     make_timestamp(timestamp);
 
     // Our buffer is full, flush it.
-    ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
+    ssize_t result = ::write(fd, buffer.data(), buffer.size());
     (void)result;
     buffer.clear();
 
@@ -502,41 +501,27 @@ public:
   }
 };
 
+pthread_once_t init_once = PTHREAD_ONCE_INIT;
+
 void init_trace() {
-  if (initialized) {
-    return;
-  }
-  const char* path = getenv("PTHREAD_TRACE_PATH");
-  if (!path) {
-    path = "pthread_trace.proto";
-  }
-  // Don't use O_TRUNC here, it might truncate the file after we started writing it from another thread.
-  int maybe_fd = open(path, O_CREAT | O_WRONLY, S_IRWXU);
-  if (maybe_fd < 0) {
-    fprintf(stderr, "Error opening file '%s': %s\n", path, strerror(errno));
-    exit(1);
-  }
-  // Not sure we can use pthread_once after all the hooking of pthreads we do, so handle it
-  // ourselves :(
-  int negative_one = -1;
-  if (fd.compare_exchange_strong(negative_one, maybe_fd)) {
-    // We opened the file, we should truncate it.
-    int result = ftruncate(fd.load(), 0);
-    (void)result;
+  // Use the real pthread_once to handle initialization.
+  typedef int (*once_fn_t)(pthread_once_t*, void (*)());
+  once_fn_t real_once = (once_fn_t)dlsym(RTLD_NEXT, "pthread_once");
+
+  real_once(&init_once, []() {
+    const char* path = getenv("PTHREAD_TRACE_PATH");
+    if (!path) {
+      path = "pthread_trace.proto";
+    }
+
+    fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, S_IRWXU);
+    if (fd < 0) {
+      fprintf(stderr, "Error opening file '%s': %s\n", path, strerror(errno));
+      exit(1);
+    }
 
     fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
-
-    // We're done initializing.
-    initialized = true;
-  } else {
-    // Another thread must have opened the file already, close our fd and wait
-    // for it to say we're initialized.
-    close(maybe_fd);
-    while (!initialized) {
-      std::this_thread::yield();
-    }
-    assert(fd.load() >= 0);
-  }
+  });
 }
 
 template <typename T>
