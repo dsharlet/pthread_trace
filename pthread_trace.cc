@@ -491,10 +491,7 @@ class thread_state {
     proto::buffer<64> clock_snapshot;
     clock_snapshot.write_tagged(static_cast<uint64_t>(TracePacket::clock_snapshot), clocks);
 
-    proto::buffer<64> trace_packet;
-    trace_packet.write_tagged(trace_packet_tag, clock_snapshot, trusted_packet_sequence_id);
-
-    buffer.write(trace_packet);
+    buffer.write_tagged(trace_packet_tag, clock_snapshot, trusted_packet_sequence_id);
   }
 
   void write_track_descriptor() {
@@ -519,11 +516,8 @@ class thread_state {
     proto::buffer<32> trace_packet_defaults;
     trace_packet_defaults.write_tagged(static_cast<uint64_t>(TracePacket::trace_packet_defaults), timestamp_clock_id);
 
-    proto::buffer<1024> trace_packet;
-    trace_packet.write_tagged(trace_packet_tag, track_descriptor, trace_packet_defaults, get_interned_data(),
+    buffer.write_tagged(trace_packet_tag, track_descriptor, trace_packet_defaults, get_interned_data(),
         trusted_packet_sequence_id, sequence_flags_cleared);
-
-    buffer.write(trace_packet);
   }
 
   void write_sequence_header() {
