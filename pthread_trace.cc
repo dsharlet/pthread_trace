@@ -569,54 +569,60 @@ typedef unsigned int (*hook_t)(unsigned int);
 unsigned int sleep(unsigned int secs) {
   if (!hooks::sleep) hooks::init(hooks::sleep, "sleep");
 
-  thread_state::get().write_trace_packet(slice_begin, event_sleep);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_sleep);
   unsigned int result = hooks::sleep(secs);
-  thread_state::get().write_trace_packet(slice_end);  // event_sleep
+  t.write_trace_packet(slice_end);  // event_sleep
   return result;
 }
 
 int usleep(useconds_t usecs) {
   if (!hooks::usleep) hooks::init(hooks::usleep, "usleep");
 
-  thread_state::get().write_trace_packet(slice_begin, event_usleep);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_usleep);
   int result = hooks::usleep(usecs);
-  thread_state::get().write_trace_packet(slice_end);  // event_usleep
+  t.write_trace_packet(slice_end);  // event_usleep
   return result;
 }
 
 int nanosleep(const struct timespec* duration, struct timespec* rem) {
   if (!hooks::nanosleep) hooks::init(hooks::nanosleep, "nanosleep");
 
-  thread_state::get().write_trace_packet(slice_begin, event_nanosleep);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_nanosleep);
   int result = hooks::nanosleep(duration, rem);
-  thread_state::get().write_trace_packet(slice_end);  // event_nanosleep
+  t.write_trace_packet(slice_end);  // event_nanosleep
   return result;
 }
 
 int sched_yield() {
   if (!hooks::sched_yield) hooks::init(hooks::sched_yield, "sched_yield");
 
-  thread_state::get().write_trace_packet(slice_begin, event_yield);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_yield);
   int result = hooks::sched_yield();
-  thread_state::get().write_trace_packet(slice_end);  // event_yield
+  t.write_trace_packet(slice_end);  // event_yield
   return result;
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond) {
   if (!hooks::pthread_cond_broadcast) hooks::init(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
 
-  thread_state::get().write_trace_packet(slice_begin, event_cond_broadcast);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_cond_broadcast);
   int result = hooks::pthread_cond_broadcast(cond);
-  thread_state::get().write_trace_packet(slice_end);  // event_cond_broadcast
+  t.write_trace_packet(slice_end);  // event_cond_broadcast
   return result;
 }
 
 int pthread_cond_signal(pthread_cond_t* cond) {
   if (!hooks::pthread_cond_signal) hooks::init(hooks::pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
 
-  thread_state::get().write_trace_packet(slice_begin, event_cond_signal);
+  auto& t = thread_state::get();
+  t.write_trace_packet(slice_begin, event_cond_signal);
   int result = hooks::pthread_cond_signal(cond);
-  thread_state::get().write_trace_packet(slice_end);  // event_cond_signal
+  t.write_trace_packet(slice_end);  // event_cond_signal
   return result;
 }
 
