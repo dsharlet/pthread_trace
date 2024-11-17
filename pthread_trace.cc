@@ -402,17 +402,30 @@ const auto& get_interned_data() {
 constexpr size_t block_size = 1024 * 32;
 
 class circular_file {
-  int fd;
-  uint8_t* buffer_;
-  size_t size_;
-  size_t blocks_;
+  int fd = 0;
+  uint8_t* buffer_ = 0;
+  size_t size_ = 0;
+  size_t blocks_ = 0;
 
-  std::atomic<bool>* allocated_;
+  std::atomic<size_t> next_{0};
 
-  std::atomic<size_t> next_;
+  void close() {
+    if (buffer_) {
+      munmap(buffer_, size_);
+      buffer_ = nullptr;
+    }
+    if (fd >= 0) {
+      if (next_.load() < size_) {
+        // Remove blocks we didn't write anything to.
+        ftruncate(fd, next_.load());
+      }
+      ::close(fd);
+      fd = -1;
+    }
+  }
 
 public:
-  void open(const char* path, size_t blocks) {
+  circular_file(const char* path, size_t blocks) {
     // Don't use O_TRUNC here, it might truncate the file after we started writing it from another thread.
     fd = ::open(path, O_CREAT | O_RDWR | O_TRUNC, S_IRWXU);
     if (fd < 0) {
@@ -437,24 +450,14 @@ public:
     }
     next_ = 0;
 
-    allocated_ = new std::atomic<bool>[blocks];
-    memset(allocated_, 0, blocks * sizeof(std::atomic<bool>));
-
     // Initialize all the blocks with padding.
     for (size_t i = 0; i < size_; i += block_size) {
       proto::write_padding(buffer_ + i, 2, block_size);
     }
   }
 
-  void close() {
-    if (buffer_) {
-      munmap(buffer_, size_);
-      buffer_ = nullptr;
-    }
-    if (fd >= 0) {
-      ::close(fd);
-      fd = -1;
-    }
+  ~circular_file() {
+    close();
   }
 
   void write_block(const uint8_t* data) {
@@ -463,7 +466,7 @@ public:
   }
 };
 
-circular_file file;
+std::unique_ptr<circular_file> file;
 
 constexpr uint64_t clock_id = 64;
 
@@ -547,7 +550,7 @@ class thread_state {
     if (buffer.size() + size + padding_capacity >= block_size) {
       buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
       assert(buffer.size() == block_size);
-      file.write_block(buffer.data());
+      file->write_block(buffer.data());
       buffer.clear();
       write_sequence_header();
     }
@@ -565,7 +568,8 @@ class thread_state {
   }
 
   template <size_t TimestampSize, typename EventField>
-  void write_begin_with_delta(size_t flush_capacity, const proto::buffer<TimestampSize>& timestamp, const EventField& field) {
+  void write_begin_with_delta(
+      size_t flush_capacity, const proto::buffer<TimestampSize>& timestamp, const EventField& field) {
     flush(flush_capacity);
 
     proto::buffer<16> track_event;
@@ -584,7 +588,6 @@ public:
   }
 
   ~thread_state() { flush(buffer.capacity()); }
-
 
   template <size_t TimestampSize, typename EventField>
   void write_begin_with_delta(const proto::buffer<TimestampSize>& timestamp, const EventField& field) {
@@ -620,9 +623,9 @@ public:
   }
 };
 
-int getenv_or(const char* env, int def) {
+const char* getenv_or(const char* env, const char* def) {
   const char* s = getenv(env);
-  return s ? std::atoi(s) : def;
+  return s ? s : def;
 }
 
 pthread_once_t init_once = PTHREAD_ONCE_INIT;
@@ -633,13 +636,14 @@ void init_trace() {
   once_fn_t real_once = (once_fn_t)dlsym(RTLD_NEXT, "pthread_once");
 
   real_once(&init_once, []() {
-    const char* path = getenv("PTHREAD_TRACE_PATH");
-    if (!path) {
-      path = "pthread_trace.proto";
+    const char* path = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
+    size_t buffer_size = atoi(getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536"));
+    size_t blocks = buffer_size * 1024 / block_size;
+    if (blocks < 0) {
+      fprintf(stderr, "pthread_trace: buffer is empty.\n");
     }
-    size_t buffer_size = getenv_or("PTHREAD_TRACE_BUFFER_SIZE", 1024 * 1024 * 64);
 
-    file.open(path, buffer_size / block_size);
+    file = std::make_unique<circular_file>(path, blocks);
     fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
   });
 }

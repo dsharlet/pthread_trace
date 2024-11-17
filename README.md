@@ -37,8 +37,9 @@ This trace is of a more realistic workload, showing threads completing tasks (th
 ## How it works
 This works by providing wrapper implementations of the various pthreads APIs that add tracing logic.
 Traces are accumulated in a thread-local buffer before being flushed to the trace file.
-Artifacts of this implementation will be visible in some ways, such as pauses in traced functions while a buffer is flushed.
-Flushes are indicated with a `(flush)` trace event.
+The trace file is a circular buffer of blocks.
+When the trace file fills up, the oldest blocks will be overwritten by newer blocks.
+The size of the trace file circular buffer can be controlled with the `PTHREAD_TRACE_BUFFER_SIZE_KB` environment variable.
 
 ## Tracing overhead
 While this project makes some effort to reduce tracing overhead, even very lightweight tracing will be significant compared to uncontended thread synchronization primitives.
