@@ -403,7 +403,7 @@ class thread_state {
     proto::buffer<64> trace_packet;
     trace_packet.write_tagged(trace_packet_tag, clock_snapshot, trusted_packet_sequence_id);
 
-    write(trace_packet);
+    buffer.write(trace_packet);
   }
 
   void write_track_descriptor() {
@@ -432,7 +432,7 @@ class thread_state {
     trace_packet.write_tagged(trace_packet_tag, track_descriptor, trace_packet_defaults, get_interned_data(),
         trusted_packet_sequence_id, sequence_flags_cleared);
 
-    write(trace_packet);
+    buffer.write(trace_packet);
   }
 
 public:
@@ -459,23 +459,22 @@ public:
     t0 = now;
   }
 
-  template <size_t N>
-  void write(const proto::buffer<N>& message) {
-    if (message.size() + buffer.size() > buffer.capacity()) {
-      // We can't write the flush slice before we flush, so get the timestamp now.
-      proto::buffer<16> timestamp;
-      make_timestamp(timestamp);
-
-      // Our buffer is full, flush it.
-      ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
-      (void)result;
-      buffer.clear();
-
-      // Now write the two flush events, using the timestamp from above.
-      write_trace_packet_with_timestamp(timestamp, slice_begin, event_flush);
-      write_trace_packet(slice_end);
+  void flush(size_t size) {
+    if (size + buffer.size() <= buffer.capacity()) {
+      return;
     }
-    buffer.write(message);
+    // We can't write the flush slice before we flush, so get the timestamp now.
+    proto::buffer<16> timestamp;
+    make_timestamp(timestamp);
+
+    // Our buffer is full, flush it.
+    ssize_t result = ::write(fd.load(), buffer.data(), buffer.size());
+    (void)result;
+    buffer.clear();
+
+    // Now write the two flush events, using the timestamp from above.
+    write_trace_packet_with_timestamp(timestamp, slice_begin, event_flush);
+    write_trace_packet(slice_end);
   }
 
   template <size_t TimestampSize, typename... TrackEventFields>
@@ -484,11 +483,10 @@ public:
     proto::buffer<16> track_event;
     track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), fields..., track_uuid);
 
-    proto::buffer<32> trace_packet;
-    trace_packet.write_tagged(
-        trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
-
-    write(trace_packet);
+    // Write the trace packet directly into the buffer to avoid a memcpy from a temporary protobuf.
+    // Flush to make sure we have enough space in the buffer.
+    flush(32);
+    buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
   }
 
   template <typename... TrackEventFields>
