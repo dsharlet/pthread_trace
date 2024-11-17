@@ -59,21 +59,27 @@ size_t write_tag(uint8_t* dst, uint64_t tag, wire_type type) {
 }
 
 size_t write_padding(uint8_t* dst, uint64_t tag, uint64_t size) {
-  size_t result = write_tag(dst, tag, wire_type::len);
-  dst += result;
-  assert(size >= result);
-  size -= result;
-  // We need to write a size that includes the bytes occupied by itself, which is tricky.
-  // Trial and error seems like the way to go.
-  for (size_t attempt = 1; attempt < 10; ++attempt) {
-    size_t actual = write_varint(dst, size - attempt);
-    if (actual != attempt) {
-      // We didn't guess the varint size correctly, try again.
-      continue;
+  size_t result = 0;
+  while (size != 0) {
+    size_t tag_size = write_tag(dst, tag, wire_type::len);
+    dst += tag_size;
+    result += tag_size;
+    assert(size >= tag_size);
+    size -= tag_size;
+    // We need to write a size that includes the bytes occupied by itself, which is tricky.
+    // Trial and error seems like the way to go.
+    for (size_t attempt = 1; attempt < 10; ++attempt) {
+      size_t actual = write_varint(dst, size - attempt);
+      if (actual == attempt) {
+        // We wrote the right number of bytes for this size.
+        return result + size;
+      }
     }
-    return result + size;
+    // If we got here, the size bumped over a threshold of varint size. Write 0 and try again.
+    *dst++ = 0;
+    result += 1;
+    size -= 1;
   }
-  assert(false);
   return result;
 }
 
@@ -296,6 +302,7 @@ constexpr auto instant =
     proto::buffer<2>::make(static_cast<uint64_t>(TrackEvent::type), static_cast<uint64_t>(EventType::INSTANT));
 
 constexpr uint64_t trace_packet_tag = 1;
+constexpr uint64_t padding_tag = 2;
 
 }  // namespace perfetto
 
@@ -532,8 +539,9 @@ class thread_state {
   }
 
   void flush(size_t size) {
-    if (buffer.size() + size + 8 >= block_size) {
-      buffer.write_tagged_padding(2, block_size - buffer.size());
+    constexpr size_t padding_capacity = 5;
+    if (buffer.size() + size + padding_capacity >= block_size) {
+      buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
       assert(buffer.size() == block_size);
       file.write_block(buffer.data());
       buffer.clear();
