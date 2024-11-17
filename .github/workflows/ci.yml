@@ -1,0 +1,32 @@
+name: ci
+on:
+  pull_request:
+  push:
+    tags:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+
+      - name: Setup Cpp
+        uses: aminya/setup-cpp@v1
+        
+      - name: Build pthread_trace.so
+        run: bazel build -c opt pthread_trace.so
+
+      - name: Build and test
+        run: bazel test --test_output=errors ...
+        
+      - name: Build and test with ASAN
+        run: bazel test --config=asan --copt=-Os --test_output=errors ...
+
+      - name: Shut down bazel
+        run: bazel shutdown

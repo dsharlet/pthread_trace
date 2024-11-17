@@ -1,0 +1,18 @@
+common --enable_bzlmod
+common --action_env=BAZEL_CXXOPTS="-std=c++17:-fstrict-aliasing:-Wall:-Wsuggest-override"
+common --copt=-fdiagnostics-color=always
+common --copt=-g --strip=never
+# Without --force_pic, bazel compiles a lot of cc files twice, if they are used by PIC and non-PIC targets.
+common --force_pic
+# Reduces code size and build time a little, and prevents accidentally relying on these features.
+common --copt=-fno-rtti --copt=-fno-exceptions
+
+# Allow us to run with --config=asan
+common:asan --copt -fsanitize=address
+common:asan --copt -DADDRESS_SANITIZER
+common:asan --linkopt -fsanitize=address
+
+# Allow us to run with --config=ubsan
+common:ubsan --copt -fsanitize=undefined
+common:ubsan --copt -DUNDEFINED_BEHAVIOR_SANITIZER
+common:ubsan --linkopt -fsanitize=undefined
