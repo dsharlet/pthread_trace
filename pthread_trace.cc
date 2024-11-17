@@ -379,21 +379,16 @@ const char* to_string(event_type t) {
   return nullptr;
 }
 
-const auto& get_interned_data() {
-  static proto::buffer<512> interned_data = []() {
-    proto::buffer<512> event_names;
-    for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
-      proto::buffer<64> event_name;
-      event_name.write_tagged(static_cast<uint64_t>(EventName::iid), i);
-      event_name.write_tagged(static_cast<uint64_t>(EventName::name), to_string(static_cast<event_type>(i)));
-      event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
-    }
-    proto::buffer<512> interned_data;
-    interned_data.write_tagged(static_cast<uint64_t>(TracePacket::interned_data), event_names);
-    return interned_data;
-  }();
-
-  return interned_data;
+template <size_t N>
+void write_interned_data(proto::buffer<N>& buf) {
+  proto::buffer<512> event_names;
+  for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
+    proto::buffer<64> event_name;
+    event_name.write_tagged(static_cast<uint64_t>(EventName::iid), i);
+    event_name.write_tagged(static_cast<uint64_t>(EventName::name), to_string(static_cast<event_type>(i)));
+    event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
+  }
+  buf.write_tagged(static_cast<uint64_t>(TracePacket::interned_data), event_names);
 }
 
 constexpr size_t block_size_kb = 32;
@@ -462,7 +457,10 @@ public:
   }
 };
 
+// Don't use globals with non-constant initialization, because global constructors might run after the first thread
+// starts tracing.
 std::unique_ptr<circular_file> file;
+std::unique_ptr<proto::buffer<512>> interned_data;
 
 constexpr uint64_t clock_id = 64;
 
@@ -522,7 +520,7 @@ class thread_state {
     proto::buffer<32> trace_packet_defaults;
     trace_packet_defaults.write_tagged(static_cast<uint64_t>(TracePacket::trace_packet_defaults), timestamp_clock_id);
 
-    buffer.write_tagged(trace_packet_tag, track_descriptor, trace_packet_defaults, get_interned_data(),
+    buffer.write_tagged(trace_packet_tag, track_descriptor, trace_packet_defaults, *interned_data,
         trusted_packet_sequence_id, sequence_flags_cleared);
   }
 
@@ -636,6 +634,9 @@ void init_trace() {
 
     file = std::make_unique<circular_file>(path, blocks);
     fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
+
+    interned_data = std::make_unique<proto::buffer<512>>();
+    write_interned_data(*interned_data);
   });
 }
 
