@@ -592,7 +592,7 @@ public:
     track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_begin, field);
 
     // Write the trace packet directly into the buffer to avoid a memcpy from a temporary protobuf.
-    buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
+    buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, track_event, timestamp);
   }
 
   template <typename EventField>
@@ -613,7 +613,7 @@ public:
     proto::buffer<4> track_event;
     track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_end);
 
-    buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
+    buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, track_event, timestamp);
   }
 
   static thread_state& get() {
