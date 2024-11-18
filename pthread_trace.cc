@@ -582,7 +582,7 @@ class track {
     flush(256);
 
     track.mutex = mutex;
-    assert(track.second.empty());
+    assert(track.sequence_id.empty());
     track.sequence_id.write_tagged(
         static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(new_sequence_id()));
 
