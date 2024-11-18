@@ -470,6 +470,8 @@ constexpr size_t max_unique_mutex = 16;
 
 static std::atomic<int> next_thread_id{0};
 static std::atomic<int> next_sequence_id{0};
+// We store sequence IDs in 3 byte varints.
+constexpr int sequence_id_mask = (1 << 21) - 1;
 
 // Incremental timestamps can be tricky, this disables them for debugging purposes.
 constexpr bool enable_incremental_timestamps = true;
@@ -557,8 +559,8 @@ class thread_state {
   NOINLINE void write_sequence_header(bool first = false) {
     if (first || enable_incremental_timestamps) {
       trusted_packet_sequence_id.clear();
-      trusted_packet_sequence_id.write_tagged(
-          static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(++next_sequence_id));
+      trusted_packet_sequence_id.write_tagged(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id),
+          static_cast<uint64_t>((++next_sequence_id) & sequence_id_mask));
     }
 
     write_track_descriptor();
