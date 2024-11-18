@@ -393,9 +393,6 @@ void write_interned_data(proto::buffer<N>& buf) {
 constexpr size_t block_size_kb = 32;
 constexpr size_t block_size = block_size_kb * 1024;
 
-// Incremental timestamps can be tricky, this disables them for debugging purposes.
-constexpr bool enable_incremental_timestamps = true;
-
 class circular_file {
   int fd = 0;
   uint8_t* buffer_ = 0;
@@ -474,6 +471,14 @@ constexpr size_t max_unique_mutex = 16;
 static std::atomic<int> next_thread_id{0};
 static std::atomic<int> next_sequence_id{0};
 
+// Incremental timestamps can be tricky, this disables them for debugging purposes.
+constexpr bool enable_incremental_timestamps = true;
+
+uint64_t now_ns() {
+  auto now = std::chrono::high_resolution_clock::now();
+  return std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
+}
+
 class thread_state {
   int id;
   proto::buffer<4> trusted_packet_sequence_id;
@@ -481,11 +486,14 @@ class thread_state {
   proto::buffer<block_size> buffer;
 
   // The previous timestamp emitted on this thread.
-  std::chrono::time_point<std::chrono::high_resolution_clock> t0;
+  proto::buffer<16> timestamp;
+  uint64_t t0_ns;
 
   std::array<std::pair<const void*, proto::buffer<6>>, max_unique_mutex> mutex_locked_event;
 
   void write_clock_snapshot() {
+    t0_ns = now_ns();
+
     proto::buffer<32> clock;
     clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), clock_id);
     clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), static_cast<uint64_t>(0));
@@ -493,8 +501,7 @@ class thread_state {
 
     proto::buffer<32> boottime_clock;
     boottime_clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), static_cast<uint64_t>(BuiltinClocks::BOOTTIME));
-    boottime_clock.write_tagged(static_cast<uint64_t>(Clock::timestamp),
-        static_cast<uint64_t>(std::chrono::time_point_cast<std::chrono::nanoseconds>(t0).time_since_epoch().count()));
+    boottime_clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), t0_ns);
 
     proto::buffer<64> clocks;
     clocks.write_tagged(static_cast<uint64_t>(ClockSnapshot::clocks), clock);
@@ -523,7 +530,9 @@ class thread_state {
     track_descriptor.write_tagged(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, name);
 
     proto::buffer<32> timestamp_clock_id;
-    timestamp_clock_id.write_tagged(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
+    if (enable_incremental_timestamps) {
+      timestamp_clock_id.write_tagged(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
+    }
 
     proto::buffer<16> track_uuid;
     track_uuid.write_tagged(static_cast<uint64_t>(TrackEventDefaults::track_uuid), static_cast<uint64_t>(id));
@@ -547,15 +556,15 @@ class thread_state {
 
   NOINLINE void write_sequence_header(bool first = false) {
     if (first || enable_incremental_timestamps) {
-      t0 = std::chrono::high_resolution_clock::now();
+      trusted_packet_sequence_id.clear();
+      trusted_packet_sequence_id.write_tagged(
+          static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(++next_sequence_id));
     }
 
-    trusted_packet_sequence_id.clear();
-    trusted_packet_sequence_id.write_tagged(
-        static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(++next_sequence_id));
-
     write_track_descriptor();
-    write_clock_snapshot();
+    if (enable_incremental_timestamps) {
+      write_clock_snapshot();
+    }
   }
 
   NOINLINE void flush() {
@@ -573,19 +582,18 @@ class thread_state {
     }
   }
 
-  void make_timestamp(proto::buffer<16>& timestamp) {
-    auto now = std::chrono::high_resolution_clock::now();
-    uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count();
+  void update_timestamp() {
+    uint64_t now = now_ns();
+    uint64_t delta = now - t0_ns;
     if (enable_incremental_timestamps) {
-      t0 = now;
+      t0_ns = now;
     }
+    timestamp.clear();
     timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta);
   }
 
 public:
-  thread_state() : id(next_thread_id++) {
-    write_sequence_header(/*first=*/true);
-  }
+  thread_state() : id(next_thread_id++) { write_sequence_header(/*first=*/true); }
 
   ~thread_state() {
     if (buffer.size() > 0) {
@@ -605,19 +613,18 @@ public:
   }
 
   template <typename TrackEvent>
-  void write_begin(const proto::buffer<2>& timestamp, const TrackEvent& track_event) {
+  void write_begin(const proto::buffer<2>& prev_timestamp, const TrackEvent& track_event) {
     if (enable_incremental_timestamps) {
-      write_begin_with_timestamp(timestamp, track_event);
+      write_begin_with_timestamp(prev_timestamp, track_event);
     } else {
-      write_begin(track_event);
+      update_timestamp();
+      write_begin_with_timestamp(timestamp, track_event);
     }
   }
 
   template <typename TrackEvent>
   void write_begin(const TrackEvent& track_event) {
-    proto::buffer<16> timestamp;
-    make_timestamp(timestamp);
-
+    update_timestamp();
     write_begin_with_timestamp(timestamp, track_event);
   }
 
@@ -625,8 +632,7 @@ public:
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    proto::buffer<16> timestamp;
-    make_timestamp(timestamp);
+    update_timestamp();
 
     buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, slice_end, timestamp);
   }
@@ -666,9 +672,6 @@ public:
           buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, mutex_locked_event[i].second, interned_data,
               prev_timestamp);
         } else {
-          proto::buffer<16> timestamp;
-          make_timestamp(timestamp);
-
           buffer.write_tagged(
               trace_packet_tag, trusted_packet_sequence_id, mutex_locked_event[i].second, interned_data, timestamp);
         }
