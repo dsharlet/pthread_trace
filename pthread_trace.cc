@@ -468,7 +468,7 @@ constexpr uint64_t clock_id = 64;
 // This might seem like a really strict limitation, but this limit only applies to one block in one thread.
 constexpr size_t max_unique_mutex = 16;
 
-static std::atomic<int> next_thread_id{0};
+static std::atomic<int> next_track_id{0};
 static std::atomic<int> next_sequence_id{0};
 // We store sequence IDs in 3 byte varints.
 constexpr int sequence_id_mask = (1 << 21) - 1;
@@ -481,7 +481,7 @@ uint64_t now_ns() {
   return std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
 }
 
-class thread_state {
+class track {
   int id;
   proto::buffer<4> trusted_packet_sequence_id;
 
@@ -595,9 +595,9 @@ class thread_state {
   }
 
 public:
-  thread_state() : id(next_thread_id++) { write_sequence_header(/*first=*/true); }
+  track() : id(next_track_id++) { write_sequence_header(/*first=*/true); }
 
-  ~thread_state() {
+  ~track() {
     if (buffer.size() > 0) {
       buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
       assert(buffer.size() == block_size);
@@ -686,8 +686,8 @@ public:
     write_begin(prev_timestamp, slice_begin_mutex_locked);
   }
 
-  static thread_state& get() {
-    thread_local thread_state t;
+  static track& get_thread() {
+    thread_local track t;
     return t;
   }
 };
@@ -766,7 +766,7 @@ typedef unsigned int (*hook_t)(unsigned int);
 unsigned int sleep(unsigned int secs) {
   if (!hooks::sleep) hooks::init(hooks::sleep, "sleep");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_sleep);
   unsigned int result = hooks::sleep(secs);
   t.write_end();  // slice_begin_sleep
@@ -776,7 +776,7 @@ unsigned int sleep(unsigned int secs) {
 int usleep(useconds_t usecs) {
   if (!hooks::usleep) hooks::init(hooks::usleep, "usleep");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_usleep);
   int result = hooks::usleep(usecs);
   t.write_end();  // slice_begin_usleep
@@ -786,7 +786,7 @@ int usleep(useconds_t usecs) {
 int nanosleep(const struct timespec* duration, struct timespec* rem) {
   if (!hooks::nanosleep) hooks::init(hooks::nanosleep, "nanosleep");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_nanosleep);
   int result = hooks::nanosleep(duration, rem);
   t.write_end();  // slice_begin_nanosleep
@@ -796,7 +796,7 @@ int nanosleep(const struct timespec* duration, struct timespec* rem) {
 int sched_yield() {
   if (!hooks::sched_yield) hooks::init(hooks::sched_yield, "sched_yield");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_yield);
   int result = hooks::sched_yield();
   t.write_end();  // slice_begin_yield
@@ -807,7 +807,7 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
   if (!hooks::pthread_cond_broadcast)
     hooks::init(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_cond_broadcast);
   int result = hooks::pthread_cond_broadcast(cond);
   t.write_end();  // slice_begin_cond_broadcast
@@ -817,7 +817,7 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
 int pthread_cond_signal(pthread_cond_t* cond) {
   if (!hooks::pthread_cond_signal) hooks::init(hooks::pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_cond_signal);
   int result = hooks::pthread_cond_signal(cond);
   t.write_end();  // slice_begin_cond_signal
@@ -829,7 +829,7 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
     hooks::init(hooks::pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_end();  // slice_begin_mutex_locked
   t.write_begin(prev_timestamp, slice_begin_cond_timedwait);
   int result = hooks::pthread_cond_timedwait(cond, mutex, abstime);
@@ -842,7 +842,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
   if (!hooks::pthread_cond_wait) hooks::init(hooks::pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_end();  // slice_begin_mutex_locked
   t.write_begin(prev_timestamp, slice_begin_cond_wait);
   int result = hooks::pthread_cond_wait(cond, mutex);
@@ -854,7 +854,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
 int pthread_join(pthread_t thread, void** value_ptr) {
   if (!hooks::pthread_join) hooks::init(hooks::pthread_join, "pthread_join");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_join);
   int result = hooks::pthread_join(thread, value_ptr);
   t.write_end();  // slice_begin_join
@@ -864,7 +864,7 @@ int pthread_join(pthread_t thread, void** value_ptr) {
 int pthread_mutex_lock(pthread_mutex_t* mutex) {
   if (!hooks::pthread_mutex_lock) hooks::init(hooks::pthread_mutex_lock, "pthread_mutex_lock");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_mutex_lock);
   int result = hooks::pthread_mutex_lock(mutex);
   t.write_end();  // slice_begin_mutex_lock
@@ -875,7 +875,7 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
 int pthread_mutex_trylock(pthread_mutex_t* mutex) {
   if (!hooks::pthread_mutex_trylock) hooks::init(hooks::pthread_mutex_trylock, "pthread_mutex_trylock");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_mutex_trylock);
   int result = hooks::pthread_mutex_trylock(mutex);
   t.write_end();  // slice_begin_mutex_trylock
@@ -891,7 +891,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   // It makes some sense that we should report the mutex as locked until this returns.
   // However, it seems that other threads are able to lock the mutex well before pthread_mutex_unlock returns, so this
   // results in confusing traces.
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_end();  // slice_begin_mutex_locked
   t.write_begin(prev_timestamp, slice_begin_mutex_unlock);
   int result = hooks::pthread_mutex_unlock(mutex);
@@ -902,7 +902,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
 int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
   if (!hooks::pthread_once) hooks::init(hooks::pthread_once, "pthread_once");
 
-  auto& t = thread_state::get();
+  auto& t = track::get_thread();
   t.write_begin(slice_begin_once);
   int result = hooks::pthread_once(once_control, init_routine);
   t.write_end();  // slice_begin_once
