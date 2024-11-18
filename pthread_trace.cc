@@ -134,6 +134,12 @@ public:
     write(buf.data(), buf.size());
   }
 
+  void write(std::initializer_list<uint8_t> data) {
+    for (uint8_t i : data) {
+      buf_[size_++] = i;
+    }
+  }
+
   void write(const buffer<2>& buf) {
     assert(buf.size() == 2);
     assert(size_ + 2 <= Capacity);
@@ -457,6 +463,11 @@ std::unique_ptr<proto::buffer<512>> interned_data;
 
 constexpr uint64_t clock_id = 64;
 
+// We can only report up to (this many) different mutexes uniquely in one block.
+// After this many mutexes, we just report (mutex locked).
+// This might seem like a really strict limitation, but this limit only applies to one block in one thread.
+constexpr size_t max_unique_mutex = 16;
+
 static std::atomic<int> next_thread_id{0};
 
 class thread_state {
@@ -467,6 +478,8 @@ class thread_state {
 
   // The previous timestamp emitted on this thread.
   std::chrono::time_point<std::chrono::high_resolution_clock> t0;
+
+  std::array<std::pair<const void*, proto::buffer<6>>, max_unique_mutex> mutex_locked_event;
 
   void write_clock_snapshot() {
     proto::buffer<32> clock;
@@ -520,6 +533,12 @@ class thread_state {
 
     buffer.write_tagged(trace_packet_tag, track_descriptor, trace_packet_defaults, *interned_data,
         trusted_packet_sequence_id, sequence_flags_cleared);
+
+    // We've invalidated the uniquely named mutex events.
+    for (auto& i : mutex_locked_event) {
+      i.first = nullptr;
+      i.second.clear();
+    }
   }
 
   NOINLINE void write_sequence_header() {
@@ -597,6 +616,48 @@ public:
     make_delta_timestamp(timestamp);
 
     buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, slice_end, timestamp);
+  }
+
+  // Write a (mutex %p locked) event. These always have the same timestamp as the previous event.
+  void write_begin_mutex_locked(const void* mutex) {
+    for (size_t i = 0; i < max_unique_mutex; ++i) {
+      if (mutex_locked_event[i].first == mutex) {
+        // We've already named this mutex locked event.
+        write_begin_with_delta(timestamp_zero, mutex_locked_event[i].second);
+        return;
+      } else if (!mutex_locked_event[i].first) {
+        // Add a new mutex locked event.
+        proto::buffer<64> interned_data;
+        size_t name_iid = static_cast<size_t>(event_type::count) + i;
+
+        char name_buf[32];
+        snprintf(name_buf, sizeof(name_buf), "(mutex %p locked)", mutex);
+
+        proto::buffer<64> event_name;
+        event_name.write_tagged(static_cast<uint64_t>(EventName::iid), name_iid);
+        event_name.write_tagged(static_cast<uint64_t>(EventName::name), static_cast<const char*>(name_buf));
+
+        proto::buffer<64> event_names;
+        event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
+        interned_data.write_tagged(static_cast<uint64_t>(TracePacket::interned_data), event_names);
+
+        mutex_locked_event[i].first = mutex;
+        mutex_locked_event[i].second.write({track_event_tag, 4, track_event_type_tag,
+            static_cast<uint64_t>(EventType::SLICE_BEGIN), name_iid_tag, static_cast<uint8_t>(name_iid)});
+
+        constexpr size_t message_capacity = 128;
+        flush(message_capacity);
+
+        // mutex locked always occurs immediately after the previous event.
+        buffer.write_tagged(
+            trace_packet_tag, trusted_packet_sequence_id, mutex_locked_event[i].second, interned_data, timestamp_zero);
+        return;
+      }
+    }
+
+    // If we got here, we didn't find this mutex in our list, and we don't have room for any more unqiue mutex messages.
+    // Just write a generic (mutex locked) message.
+    write_begin_with_delta(timestamp_zero, slice_begin_mutex_locked);
   }
 
   static thread_state& get() {
@@ -747,7 +808,7 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
   t.write_begin_with_delta(timestamp_zero, slice_begin_cond_timedwait);
   int result = hooks::pthread_cond_timedwait(cond, mutex, abstime);
   t.write_end();  // slice_begin_cond_timedwait
-  t.write_begin_with_delta(timestamp_zero, slice_begin_mutex_locked);
+  t.write_begin_mutex_locked(mutex);
   return result;
 }
 
@@ -760,7 +821,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
   t.write_begin_with_delta(timestamp_zero, slice_begin_cond_wait);
   int result = hooks::pthread_cond_wait(cond, mutex);
   t.write_end();  // slice_begin_cond_wait
-  t.write_begin_with_delta(timestamp_zero, slice_begin_mutex_locked);
+  t.write_begin_mutex_locked(mutex);
   return result;
 }
 
@@ -781,7 +842,7 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
   t.write_begin(slice_begin_mutex_lock);
   int result = hooks::pthread_mutex_lock(mutex);
   t.write_end();  // slice_begin_mutex_lock
-  t.write_begin_with_delta(timestamp_zero, slice_begin_mutex_locked);
+  t.write_begin_mutex_locked(mutex);
   return result;
 }
 
@@ -793,7 +854,7 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
   int result = hooks::pthread_mutex_trylock(mutex);
   t.write_end();  // slice_begin_mutex_trylock
   if (result == 0) {
-    t.write_begin_with_delta(timestamp_zero, slice_begin_mutex_locked);
+    t.write_begin_mutex_locked(mutex);
   }
   return result;
 }
