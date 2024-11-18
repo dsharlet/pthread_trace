@@ -39,6 +39,19 @@ enum class wire_type {
   i32 = 5,
 };
 
+// Convert an integer to a varint. May overflow if the result doesn't fit in 64 bits.
+constexpr uint64_t to_varint(uint64_t value) {
+  constexpr uint8_t continuation = 0x80;
+  uint64_t result = 0;
+  while (value > 0x7f) {
+    result |= static_cast<uint8_t>(value | continuation);
+    result <<= 8;
+    value >>= 7;
+  }
+  result |= static_cast<uint8_t>(value);
+  return result;
+}
+
 size_t write_varint(uint8_t* dst, uint64_t value) {
   constexpr uint8_t continuation = 0x80;
   // clang-format on
@@ -51,7 +64,7 @@ size_t write_varint(uint8_t* dst, uint64_t value) {
   return result;
 }
 
-constexpr uint8_t make_tag(uint8_t tag, wire_type type) { return (tag << 3) | static_cast<uint8_t>(type); }
+constexpr uint64_t make_tag(uint64_t tag, wire_type type) { return to_varint((tag << 3) | static_cast<uint8_t>(type)); }
 
 size_t write_tag(uint8_t* dst, uint64_t tag, wire_type type) {
   return write_varint(dst, (tag << 3) | static_cast<uint64_t>(type));
