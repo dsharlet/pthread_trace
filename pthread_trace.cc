@@ -458,6 +458,7 @@ public:
 std::unique_ptr<circular_file> file;
 std::unique_ptr<proto::buffer<512>> interned_data;
 
+// Set this to 0 to disable incremental timestamps (for debugging).
 constexpr uint64_t clock_id = 64;
 
 // We can only report up to (this many) different mutexes uniquely in one block.
@@ -471,37 +472,43 @@ constexpr int sequence_id_mask = (1 << 21) - 1;
 
 int new_sequence_id() { return (++next_sequence_id) & sequence_id_mask; }
 
-// Incremental timestamps can be tricky, this disables them for debugging purposes.
-constexpr bool enable_incremental_timestamps = true;
+class incremental_clock {
+  uint64_t t0 = 0;
 
-uint64_t now_ns() {
-  auto now = std::chrono::high_resolution_clock::now();
-  return std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
-}
+  static uint64_t now_ns() {
+    auto now = std::chrono::high_resolution_clock::now();
+    return std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
+  }
 
-class track {
-  int id;
-  proto::buffer<4> sequence_id;
+public:
+  // Write a timestamp for the current time for use in the sequence `sequence_id` passed to `write_clock_snapshot`.
+  void update_timestamp(proto::buffer<12>& timestamp) {
+    uint64_t now = now_ns();
+    uint64_t value;
+    if (clock_id) {
+      value = now - t0;
+      t0 = now;
+    } else {
+      value = now;
+    }
+    timestamp.clear();
+    timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), value);
+  }
 
-  proto::buffer<block_size> buffer;
+  template <size_t N>
+  void write_clock_snapshot(proto::buffer<N>& buffer, const proto::buffer<4>& sequence_id) {
+    if (!clock_id) return;
 
-  // The previous timestamp emitted on this thread.
-  proto::buffer<16> timestamp;
-  uint64_t t0_ns;
-
-  std::array<std::pair<const void*, proto::buffer<4>>, mutexes_per_thread> mutex_tracks;
-
-  void write_clock_snapshot(const proto::buffer<4>& sequence_id) {
-    t0_ns = now_ns();
+    t0 = now_ns();
 
     proto::buffer<32> clock;
     clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), clock_id);
     clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), static_cast<uint64_t>(0));
-    clock.write_tagged(static_cast<uint64_t>(Clock::is_incremental), enable_incremental_timestamps);
+    clock.write_tagged(static_cast<uint64_t>(Clock::is_incremental), true);
 
     proto::buffer<32> boottime_clock;
     boottime_clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), static_cast<uint64_t>(BuiltinClocks::BOOTTIME));
-    boottime_clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), t0_ns);
+    boottime_clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), t0);
 
     proto::buffer<64> clocks;
     clocks.write_tagged(static_cast<uint64_t>(ClockSnapshot::clocks), clock);
@@ -512,9 +519,27 @@ class track {
 
     buffer.write_tagged(trace_packet_tag, clock_snapshot, sequence_id);
   }
+};
 
-  void write_track_descriptor(uint64_t id, const char* name_str, const proto::buffer<512>& interned_data,
-      uint64_t clock_id, const proto::buffer<4>& sequence_id) {
+class track {
+  int id;
+  proto::buffer<4> sequence_id;
+
+  proto::buffer<block_size> buffer;
+
+  // The previous timestamp emitted on this thread.
+  incremental_clock clock;
+
+  struct mutex_track {
+    const void* mutex;
+    proto::buffer<4> sequence_id;
+    incremental_clock clock;
+  };
+
+  std::array<mutex_track, mutexes_per_thread> mutex_tracks;
+
+  void write_track_descriptor(
+      uint64_t id, const char* name_str, const proto::buffer<512>& interned_data, const proto::buffer<4>& sequence_id) {
     // Write the thread descriptor once.
     proto::buffer<12> uuid;
     uuid.write_tagged(static_cast<uint64_t>(TrackDescriptor::uuid), id);
@@ -526,7 +551,7 @@ class track {
     track_descriptor.write_tagged(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, name);
 
     proto::buffer<32> timestamp_clock_id;
-    if (clock_id > 0) {
+    if (clock_id) {
       timestamp_clock_id.write_tagged(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
     }
 
@@ -550,19 +575,19 @@ class track {
     char thread_name[16];
     snprintf(thread_name, sizeof(thread_name), "thread %04d", id);
 
-    write_track_descriptor(id, thread_name, *interned_data, enable_incremental_timestamps ? clock_id : 0, sequence_id);
+    write_track_descriptor(id, thread_name, *interned_data, sequence_id);
   }
 
-  const proto::buffer<4>* get_mutex_sequence_id(const void* mutex) {
-    for (auto& i : mutex_tracks) {
-      if (i.first == mutex) {
-        return &i.second;
-      } else if (!i.first) {
+  mutex_track& get_mutex_track(const void* mutex) {
+    for (mutex_track& i : mutex_tracks) {
+      if (i.mutex == mutex) {
+        return i;
+      } else if (!i.mutex) {
         flush(256);
 
-        i.first = mutex;
+        i.mutex = mutex;
         assert(i.second.empty());
-        i.second.write_tagged(
+        i.sequence_id.write_tagged(
             static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(new_sequence_id()));
 
         char mutex_locked_str[64];
@@ -580,27 +605,27 @@ class track {
 
         char track_name[32];
         snprintf(track_name, sizeof(track_name), "mutex %p", mutex);
-        write_track_descriptor(reinterpret_cast<uint64_t>(mutex), track_name, interned_data, /*clock_id=*/0, i.second);
-        return &i.second;
+        write_track_descriptor(reinterpret_cast<uint64_t>(mutex), track_name, interned_data, i.sequence_id);
+        i.clock.write_clock_snapshot(buffer, i.sequence_id);
+        return i;
       }
     }
     // Flush the current block and try again.
-    fprintf(stderr, "pthread_trace: no track for mutex %p, prematurely flushing block with %zu of %zu bytes used\n", mutex, buffer.size(), buffer.capacity());
+    fprintf(stderr, "pthread_trace: no track for mutex %p, prematurely flushing block with %zu of %zu bytes used\n",
+        mutex, buffer.size(), buffer.capacity());
     flush();
-    return get_mutex_sequence_id(mutex);
+    return get_mutex_track(mutex);
   }
 
   NOINLINE void begin_block(bool first = false) {
-    if (first || enable_incremental_timestamps) {
+    if (first || clock_id) {
       sequence_id.clear();
       sequence_id.write_tagged(
           static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(new_sequence_id()));
     }
 
     write_track_descriptor();
-    if (enable_incremental_timestamps) {
-      write_clock_snapshot(sequence_id);
-    }
+    clock.write_clock_snapshot(buffer, sequence_id);
     memset(mutex_tracks.data(), 0, sizeof(mutex_tracks));
   }
 
@@ -616,18 +641,6 @@ class track {
     constexpr size_t padding_capacity = 2;
     if (buffer.size() + size + padding_capacity >= block_size) {
       flush();
-    }
-  }
-
-  void update_timestamp(bool incremental = enable_incremental_timestamps) {
-    timestamp.clear();
-    uint64_t now = now_ns();
-    if (incremental) {
-      uint64_t delta = now - t0_ns;
-      timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta);
-      t0_ns = now;
-    } else {
-      timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), now);
     }
   }
 
@@ -647,7 +660,8 @@ public:
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    update_timestamp();
+    proto::buffer<12> timestamp;
+    clock.update_timestamp(timestamp);
     buffer.write_tagged(trace_packet_tag, sequence_id, track_event, timestamp);
   }
 
@@ -655,7 +669,8 @@ public:
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    update_timestamp();
+    proto::buffer<12> timestamp;
+    clock.update_timestamp(timestamp);
     buffer.write_tagged(trace_packet_tag, sequence_id, slice_end, timestamp);
   }
 
@@ -664,22 +679,22 @@ public:
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    const auto* mutex_sequence_id = get_mutex_sequence_id(mutex);
-    if (!mutex_sequence_id) return;
+    mutex_track& track = get_mutex_track(mutex);
 
-    update_timestamp(/*incremental=*/false);
-    buffer.write_tagged(trace_packet_tag, *mutex_sequence_id, slice_begin_mutex_locked, timestamp);
+    proto::buffer<12> timestamp;
+    track.clock.update_timestamp(timestamp);
+    buffer.write_tagged(trace_packet_tag, track.sequence_id, slice_begin_mutex_locked, timestamp);
   }
 
   void write_end_mutex_locked(const void* mutex) {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    const auto* mutex_sequence_id = get_mutex_sequence_id(mutex);
-    if (!mutex_sequence_id) return;
+    mutex_track& track = get_mutex_track(mutex);
 
-    update_timestamp(/*incremental=*/false);
-    buffer.write_tagged(trace_packet_tag, *mutex_sequence_id, slice_end, timestamp);
+    proto::buffer<12> timestamp;
+    track.clock.update_timestamp(timestamp);
+    buffer.write_tagged(trace_packet_tag, track.sequence_id, slice_end, timestamp);
   }
 
   static track& get_thread() {
