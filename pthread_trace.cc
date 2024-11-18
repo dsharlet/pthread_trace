@@ -569,13 +569,8 @@ class thread_state {
   }
 
   void make_timestamp(proto::buffer<16>& timestamp) {
-    // For some reason I haven't been able to figure out, timestamps can get out of order when crossing block
-    // boundaries. We can fix this by subtracting a small error from the timestamp deltas we emit. Error accumulates
-    // within each block. However, at block boundaries, we reset the incremental timestamps to the global absolute time,
-    // so the error accumulation is limited.
-    constexpr uint64_t fudge_time_ns = enable_incremental_timestamps ? 1 : 0;
     auto now = std::chrono::high_resolution_clock::now();
-    uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count() - fudge_time_ns;
+    uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count();
     if (enable_incremental_timestamps) {
       t0 = now;
     }
