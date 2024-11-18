@@ -470,7 +470,6 @@ std::unique_ptr<proto::buffer<512>> interned_data;
 constexpr uint64_t clock_id = 64;
 
 static std::atomic<int> next_thread_id{0};
-static std::atomic<int> next_sequence_id{1};
 
 class thread_state {
   int id;
@@ -537,9 +536,6 @@ class thread_state {
 
   NOINLINE void write_sequence_header() {
     t0 = std::chrono::high_resolution_clock::now();
-    trusted_packet_sequence_id.clear();
-    trusted_packet_sequence_id.write_tagged(
-        static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(next_sequence_id++));
 
     write_track_descriptor();
     write_clock_snapshot();
@@ -573,7 +569,12 @@ class thread_state {
   }
 
 public:
-  thread_state() : id(next_thread_id++) { write_sequence_header(); }
+  thread_state() : id(next_thread_id++) {
+    // This can't be 0, just use the thread id + 1 instead.
+    trusted_packet_sequence_id.write_tagged(
+        static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(id + 1));
+    write_sequence_header();
+  }
 
   ~thread_state() {
     if (buffer.size() > 0) {
