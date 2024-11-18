@@ -390,7 +390,7 @@ const char* to_string(event_type t) {
 
 template <size_t N>
 void write_interned_data(proto::buffer<N>& buf) {
-  proto::buffer<512> event_names;
+  proto::buffer<N> event_names;
   for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
     proto::buffer<64> event_name;
     event_name.write_tagged(static_cast<uint64_t>(EventName::iid), i);
@@ -474,10 +474,6 @@ std::unique_ptr<proto::buffer<512>> interned_data;
 // Set this to 0 to disable incremental timestamps (for debugging).
 constexpr uint64_t clock_id = 64;
 
-// We can only report up to (this many) different mutexes uniquely in one block.
-// We stop writing mutex tracks after this many mutexes.
-constexpr size_t mutexes_per_thread = 256;
-
 static std::atomic<int> next_track_id{0};
 static std::atomic<int> next_sequence_id{0};
 // We store sequence IDs in 3 byte varints.
@@ -543,12 +539,17 @@ class track {
   // The previous timestamp emitted on this thread.
   incremental_clock clock;
 
+  // We write mutex events to a track with an id that includes the mutex pointer. This means we can write mutex events
+  // to this thread's buffer. This avoids needing to find a way to synchronize access to a shared structure for mutex
+  // events. The trace parser will reassemble the events from the different tracks (with the same IDs) into one track.
   struct mutex_track {
     const void* mutex;
     proto::buffer<4> sequence_id;
     incremental_clock clock;
   };
 
+  // Remember the sequence ID and clock for each mutex we see in this block.
+  static constexpr size_t mutexes_per_thread = 256;
   std::array<mutex_track, mutexes_per_thread> mutex_tracks;
 
   NOINLINE void write_track_descriptor(
@@ -563,7 +564,7 @@ class track {
     proto::buffer<256> track_descriptor;
     track_descriptor.write_tagged(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, name);
 
-    proto::buffer<32> timestamp_clock_id;
+    proto::buffer<8> timestamp_clock_id;
     if (clock_id) {
       timestamp_clock_id.write_tagged(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
     }
@@ -571,7 +572,7 @@ class track {
     proto::buffer<12> track_uuid;
     track_uuid.write_tagged(static_cast<uint64_t>(TrackEventDefaults::track_uuid), id);
 
-    proto::buffer<32> track_event_defaults;
+    proto::buffer<16> track_event_defaults;
     track_event_defaults.write_tagged(static_cast<uint64_t>(TracePacketDefaults::track_event_defaults), track_uuid);
 
     proto::buffer<32> trace_packet_defaults;
@@ -599,14 +600,14 @@ class track {
     track.sequence_id.write_tagged(
         static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(new_sequence_id()));
 
-    char mutex_locked_str[64];
+    char mutex_locked_str[16];
     snprintf(mutex_locked_str, sizeof(mutex_locked_str), "(locked by %d)", id);
 
-    proto::buffer<64> event_name;
+    proto::buffer<32> event_name;
     event_name.write_tagged(static_cast<uint64_t>(EventName::iid), static_cast<uint64_t>(event_type::mutex_locked));
     event_name.write_tagged(static_cast<uint64_t>(EventName::name), static_cast<const char*>(mutex_locked_str));
 
-    proto::buffer<64> event_names;
+    proto::buffer<32> event_names;
     event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
 
     proto::buffer<512> interned_data;
@@ -789,8 +790,6 @@ NOINLINE void init(T& hook, const char* name, const char* version = nullptr) {
 
 extern "C" {
 
-typedef unsigned int (*hook_t)(unsigned int);
-
 unsigned int sleep(unsigned int secs) {
   if (!hooks::sleep) hooks::init(hooks::sleep, "sleep");
 
@@ -916,9 +915,6 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
 int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   if (!hooks::pthread_mutex_unlock) hooks::init(hooks::pthread_mutex_unlock, "pthread_mutex_unlock");
 
-  // It makes some sense that we should report the mutex as locked until this returns.
-  // However, it seems that other threads are able to lock the mutex well before pthread_mutex_unlock returns, so this
-  // results in confusing traces.
   auto& t = track::get_thread();
   t.write_end_mutex_locked(mutex);
   t.write_begin(slice_begin_mutex_unlock);
