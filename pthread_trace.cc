@@ -496,7 +496,7 @@ public:
   }
 
   template <size_t N>
-  void write_clock_snapshot(proto::buffer<N>& buffer, const proto::buffer<4>& sequence_id) {
+  NOINLINE void write_clock_snapshot(proto::buffer<N>& buffer, const proto::buffer<4>& sequence_id) {
     if (!clock_id) return;
 
     t0 = now_ns();
@@ -538,7 +538,7 @@ class track {
 
   std::array<mutex_track, mutexes_per_thread> mutex_tracks;
 
-  void write_track_descriptor(
+  NOINLINE void write_track_descriptor(
       uint64_t id, const char* name_str, const proto::buffer<512>& interned_data, const proto::buffer<4>& sequence_id) {
     // Write the thread descriptor once.
     proto::buffer<12> uuid;
@@ -578,35 +578,39 @@ class track {
     write_track_descriptor(id, thread_name, *interned_data, sequence_id);
   }
 
+  NOINLINE void write_mutex_track_descriptor(mutex_track& track, const void* mutex) {
+    flush(256);
+
+    track.mutex = mutex;
+    assert(track.second.empty());
+    track.sequence_id.write_tagged(
+        static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(new_sequence_id()));
+
+    char mutex_locked_str[64];
+    snprintf(mutex_locked_str, sizeof(mutex_locked_str), "(locked by %d)", id);
+
+    proto::buffer<64> event_name;
+    event_name.write_tagged(static_cast<uint64_t>(EventName::iid), static_cast<uint64_t>(event_type::mutex_locked));
+    event_name.write_tagged(static_cast<uint64_t>(EventName::name), static_cast<const char*>(mutex_locked_str));
+
+    proto::buffer<64> event_names;
+    event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
+
+    proto::buffer<512> interned_data;
+    interned_data.write_tagged(static_cast<uint64_t>(TracePacket::interned_data), event_names);
+
+    char track_name[32];
+    snprintf(track_name, sizeof(track_name), "mutex %p", mutex);
+    write_track_descriptor(reinterpret_cast<uint64_t>(mutex), track_name, interned_data, track.sequence_id);
+    track.clock.write_clock_snapshot(buffer, track.sequence_id);
+  }
+
   mutex_track& get_mutex_track(const void* mutex) {
     for (mutex_track& i : mutex_tracks) {
       if (i.mutex == mutex) {
         return i;
       } else if (!i.mutex) {
-        flush(256);
-
-        i.mutex = mutex;
-        assert(i.second.empty());
-        i.sequence_id.write_tagged(
-            static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(new_sequence_id()));
-
-        char mutex_locked_str[64];
-        snprintf(mutex_locked_str, sizeof(mutex_locked_str), "(locked by %d)", id);
-
-        proto::buffer<64> event_name;
-        event_name.write_tagged(static_cast<uint64_t>(EventName::iid), static_cast<uint64_t>(event_type::mutex_locked));
-        event_name.write_tagged(static_cast<uint64_t>(EventName::name), static_cast<const char*>(mutex_locked_str));
-
-        proto::buffer<64> event_names;
-        event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
-
-        proto::buffer<512> interned_data;
-        interned_data.write_tagged(static_cast<uint64_t>(TracePacket::interned_data), event_names);
-
-        char track_name[32];
-        snprintf(track_name, sizeof(track_name), "mutex %p", mutex);
-        write_track_descriptor(reinterpret_cast<uint64_t>(mutex), track_name, interned_data, i.sequence_id);
-        i.clock.write_clock_snapshot(buffer, i.sequence_id);
+        write_mutex_track_descriptor(i, mutex);
         return i;
       }
     }
@@ -645,9 +649,9 @@ class track {
   }
 
 public:
-  track() : id(next_track_id++) { begin_block(/*first=*/true); }
+  NOINLINE track() : id(next_track_id++) { begin_block(/*first=*/true); }
 
-  ~track() {
+  NOINLINE ~track() {
     if (buffer.size() > 0) {
       buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
       assert(buffer.size() == block_size);
@@ -656,7 +660,7 @@ public:
   }
 
   template <typename TrackEvent>
-  void write_begin(const TrackEvent& track_event) {
+  NOINLINE void write_begin(const TrackEvent& track_event) {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
@@ -665,7 +669,7 @@ public:
     buffer.write_tagged(trace_packet_tag, sequence_id, track_event, timestamp);
   }
 
-  void write_end() {
+  NOINLINE void write_end() {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
@@ -675,7 +679,7 @@ public:
   }
 
   // Write a (mutex %p locked) event. These always have the same timestamp as the previous event.
-  void write_begin_mutex_locked(const void* mutex) {
+  NOINLINE void write_begin_mutex_locked(const void* mutex) {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
@@ -686,7 +690,7 @@ public:
     buffer.write_tagged(trace_packet_tag, track.sequence_id, slice_begin_mutex_locked, timestamp);
   }
 
-  void write_end_mutex_locked(const void* mutex) {
+  NOINLINE void write_end_mutex_locked(const void* mutex) {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
