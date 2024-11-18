@@ -466,7 +466,11 @@ constexpr uint64_t clock_id = 64;
 // We can only report up to (this many) different mutexes uniquely in one block.
 // After this many mutexes, we just report (mutex locked).
 // This might seem like a really strict limitation, but this limit only applies to one block in one thread.
-constexpr size_t max_unique_mutex = 16;
+// TODO: This is zero because reporting individual mutex lockage is conceptually flawed. Traces are hierarchical,
+// but mutex lock state is not. A thread can lock mutexes a, b, c in that order, and then unlock them in c, b, a
+// (hierarchical order), but it could also unlock them in a different order, where hierarchical tracing is
+// misleading.
+constexpr size_t max_unique_mutex = 0;
 
 static std::atomic<int> next_track_id{0};
 static std::atomic<int> next_sequence_id{0};
@@ -686,6 +690,8 @@ public:
     write_begin(prev_timestamp, slice_begin_mutex_locked);
   }
 
+  void write_end_mutex_locked(const void* mutex) { write_end(); }
+
   static track& get_thread() {
     thread_local track t;
     return t;
@@ -830,7 +836,7 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
-  t.write_end();  // slice_begin_mutex_locked
+  t.write_end_mutex_locked(mutex);
   t.write_begin(prev_timestamp, slice_begin_cond_timedwait);
   int result = hooks::pthread_cond_timedwait(cond, mutex, abstime);
   t.write_end();  // slice_begin_cond_timedwait
@@ -843,7 +849,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
-  t.write_end();  // slice_begin_mutex_locked
+  t.write_end_mutex_locked(mutex);
   t.write_begin(prev_timestamp, slice_begin_cond_wait);
   int result = hooks::pthread_cond_wait(cond, mutex);
   t.write_end();  // slice_begin_cond_wait
@@ -892,7 +898,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   // However, it seems that other threads are able to lock the mutex well before pthread_mutex_unlock returns, so this
   // results in confusing traces.
   auto& t = track::get_thread();
-  t.write_end();  // slice_begin_mutex_locked
+  t.write_end_mutex_locked(mutex);
   t.write_begin(prev_timestamp, slice_begin_mutex_unlock);
   int result = hooks::pthread_mutex_unlock(mutex);
   t.write_end();  // slice_begin_mutex_unlock
