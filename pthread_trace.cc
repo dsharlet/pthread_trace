@@ -148,6 +148,7 @@ public:
   }
 
   void write(std::initializer_list<uint8_t> data) {
+    assert(size_ + data.size() <= Capacity);
     for (uint8_t i : data) {
       buf_[size_++] = i;
     }
@@ -431,7 +432,7 @@ public:
     // Don't use O_TRUNC here, it might truncate the file after we started writing it from another thread.
     fd = ::open(path, O_CREAT | O_RDWR | O_TRUNC, S_IRWXU);
     if (fd < 0) {
-      fprintf(stderr, "Error opening file '%s': %s\n", path, strerror(errno));
+      fprintf(stderr, "pthread_trace: Error opening file '%s': %s\n", path, strerror(errno));
       exit(1);
     }
 
@@ -440,14 +441,14 @@ public:
     int result = ftruncate(fd, size_);
     if (result < 0) {
       close();
-      fprintf(stderr, "Error allocating space in file '%s': %s\n", path, strerror(errno));
+      fprintf(stderr, "pthread_trace: Error allocating space in file '%s': %s\n", path, strerror(errno));
       exit(1);
     }
 
     buffer_ = static_cast<uint8_t*>(mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
     if (buffer_ == (void*)-1) {
       close();
-      fprintf(stderr, "Error mapping file '%s': %s\n", path, strerror(errno));
+      fprintf(stderr, "pthread_trace: Error mapping file '%s': %s\n", path, strerror(errno));
       exit(1);
     }
     next_ = 0;
@@ -629,7 +630,7 @@ class track {
       }
     }
     // Flush the current block and try again.
-    fprintf(stderr, "pthread_trace: no track for mutex %p, prematurely flushing block with %zu of %zu bytes used\n",
+    fprintf(stderr, "pthread_trace: No track for mutex %p, prematurely flushing block with %zu of %zu bytes used\n",
         mutex, buffer.size(), buffer.capacity());
     flush();
     return get_mutex_track(mutex);
@@ -738,8 +739,9 @@ NOINLINE void init_trace() {
     const char* buffer_size_str = getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536");
     int buffer_size_kb = atoi(buffer_size_str);
     int blocks = (buffer_size_kb + block_size_kb - 1) / block_size_kb;
-    if (blocks < 0) {
-      fprintf(stderr, "pthread_trace: invalid buffer size %d (%s).\n", buffer_size_kb, buffer_size_str);
+    if (blocks <= 0) {
+      fprintf(stderr, "pthread_trace: Invalid buffer size %d (%s).\n", buffer_size_kb, buffer_size_str);
+      exit(1);
     }
 
     file = std::make_unique<circular_file>(path, blocks);
