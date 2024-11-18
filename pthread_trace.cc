@@ -257,8 +257,13 @@ enum class TracePacket {
   /*optional uint32*/ sequence_flags = 13,
 };
 
+enum class TrackEventDefaults {
+  /*optional uint64*/ track_uuid = 11,
+};
+
 enum class TracePacketDefaults {
   /*optional uint32*/ timestamp_clock_id = 58,
+  /*optional TrackEventDefaults*/ track_event_defaults = 11,
 };
 
 // https://cs.android.com/android/platform/superproject/main/+/main:external/perfetto/protos/perfetto/trace/clock_snapshot.proto
@@ -469,7 +474,6 @@ static std::atomic<int> next_sequence_id{1};
 
 class thread_state {
   int id;
-  proto::buffer<4> track_uuid;
   proto::buffer<4> trusted_packet_sequence_id;
 
   proto::buffer<block_size> buffer;
@@ -517,8 +521,15 @@ class thread_state {
     proto::buffer<32> timestamp_clock_id;
     timestamp_clock_id.write_tagged(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
 
+    proto::buffer<16> track_uuid;
+    track_uuid.write_tagged(static_cast<uint64_t>(TrackEventDefaults::track_uuid), static_cast<uint64_t>(id));
+
+    proto::buffer<32> track_event_defaults;
+    track_event_defaults.write_tagged(static_cast<uint64_t>(TracePacketDefaults::track_event_defaults), track_uuid);
+
     proto::buffer<32> trace_packet_defaults;
-    trace_packet_defaults.write_tagged(static_cast<uint64_t>(TracePacket::trace_packet_defaults), timestamp_clock_id);
+    trace_packet_defaults.write_tagged(
+        static_cast<uint64_t>(TracePacket::trace_packet_defaults), timestamp_clock_id, track_event_defaults);
 
     buffer.write_tagged(trace_packet_tag, track_descriptor, trace_packet_defaults, *interned_data,
         trusted_packet_sequence_id, sequence_flags_cleared);
@@ -562,11 +573,7 @@ class thread_state {
   }
 
 public:
-  thread_state() : id(next_thread_id++) {
-    track_uuid.write_tagged(static_cast<uint64_t>(TrackEvent::track_uuid), static_cast<uint64_t>(id));
-
-    write_sequence_header();
-  }
+  thread_state() : id(next_thread_id++) { write_sequence_header(); }
 
   ~thread_state() {
     if (buffer.size() > 0) {
@@ -581,8 +588,8 @@ public:
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    proto::buffer<16> track_event;
-    track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_begin, field, track_uuid);
+    proto::buffer<8> track_event;
+    track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_begin, field);
 
     // Write the trace packet directly into the buffer to avoid a memcpy from a temporary protobuf.
     buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
@@ -603,8 +610,8 @@ public:
     proto::buffer<16> timestamp;
     make_delta_timestamp(timestamp);
 
-    proto::buffer<16> track_event;
-    track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_end, track_uuid);
+    proto::buffer<4> track_event;
+    track_event.write_tagged(static_cast<uint64_t>(TracePacket::track_event), slice_end);
 
     buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, sequence_flags_needed, track_event, timestamp);
   }
