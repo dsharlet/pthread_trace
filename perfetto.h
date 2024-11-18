@@ -58,6 +58,8 @@ enum {
   /*optional uint64*/ track_uuid = 11,
   /*repeated uint64*/ extra_counter_track_uuids = 31,
   /*repeated int64*/ extra_counter_values = 12,
+  /*repeated fixed64*/ flow_ids = 47,
+  /*repeated fixed64*/ terminating_flow_ids = 48,
 };
 }
 

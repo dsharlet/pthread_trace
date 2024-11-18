@@ -142,6 +142,9 @@ enum class event_type : uint8_t {
 constexpr uint8_t name_iid_tag = make_tag(TrackEvent::name_iid, proto::wire_type::varint);
 constexpr uint8_t track_event_tag = make_tag(TracePacket::track_event, proto::wire_type::len);
 constexpr uint8_t track_event_type_tag = make_tag(TrackEvent::type, proto::wire_type::varint);
+constexpr uint16_t track_event_flow_ids_tag = make_tag(TrackEvent::flow_ids, proto::wire_type::i64);
+constexpr uint16_t track_event_terminate_flow_ids_tag =
+    make_tag(TrackEvent::terminating_flow_ids, proto::wire_type::i64);
 
 constexpr proto::buffer<6> make_slice_begin(event_type event) {
   return proto::buffer<6>(
@@ -149,7 +152,24 @@ constexpr proto::buffer<6> make_slice_begin(event_type event) {
       /*size=*/6);
 }
 
-constexpr proto::buffer<4> slice_end({{track_event_tag, 2, track_event_type_tag, EventType::SLICE_END}}, /*size=*/4);
+proto::buffer<16> make_slice_begin(
+    event_type event, uint64_t flow_id, uint16_t flow_id_tag = track_event_flow_ids_tag) {
+  std::array<uint8_t, 16> result = {{
+      track_event_tag,
+      14,
+      track_event_type_tag,
+      static_cast<uint64_t>(EventType::SLICE_BEGIN),
+      name_iid_tag,
+      static_cast<uint8_t>(event),
+      static_cast<uint8_t>(flow_id_tag & 0xff),
+      static_cast<uint8_t>(flow_id_tag >> 8),
+  }};
+  memcpy(&result[8], &flow_id, sizeof(flow_id));
+  return proto::buffer<16>(result);
+}
+
+constexpr proto::buffer<4> slice_end(
+    {{track_event_tag, 2, track_event_type_tag, static_cast<uint64_t>(EventType::SLICE_END)}}, /*size=*/4);
 
 constexpr auto slice_begin_sleep = make_slice_begin(event_type::sleep);
 constexpr auto slice_begin_usleep = make_slice_begin(event_type::usleep);
@@ -158,13 +178,8 @@ constexpr auto slice_begin_yield = make_slice_begin(event_type::yield);
 
 constexpr auto slice_begin_cond_broadcast = make_slice_begin(event_type::cond_broadcast);
 constexpr auto slice_begin_cond_signal = make_slice_begin(event_type::cond_signal);
-constexpr auto slice_begin_cond_timedwait = make_slice_begin(event_type::cond_timedwait);
-constexpr auto slice_begin_cond_wait = make_slice_begin(event_type::cond_wait);
-constexpr auto slice_begin_join = make_slice_begin(event_type::join);
-constexpr auto slice_begin_mutex_lock = make_slice_begin(event_type::mutex_lock);
 constexpr auto slice_begin_mutex_trylock = make_slice_begin(event_type::mutex_trylock);
-constexpr auto slice_begin_mutex_unlock = make_slice_begin(event_type::mutex_unlock);
-constexpr auto slice_begin_mutex_locked = make_slice_begin(event_type::mutex_locked);
+constexpr auto slice_begin_join = make_slice_begin(event_type::join);
 constexpr auto slice_begin_once = make_slice_begin(event_type::once);
 constexpr auto slice_begin_barrier_wait = make_slice_begin(event_type::barrier_wait);
 
@@ -570,15 +585,24 @@ public:
     return t;
   }
 
-  // This is inline so we can see constexpr track_events.
-  template <typename TrackEvent>
-  INLINE void write_begin(const TrackEvent& track_event) {
+  template <size_t N>
+  void update_timestamp(proto::buffer<N>& timestamp) {
+    clock.update_timestamp(timestamp);
+  }
+
+  template <typename Timestamp, typename TrackEvent>
+  NOINLINE void write_begin(const Timestamp& timestamp, const TrackEvent& track_event) {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    timestamp_type timestamp;
-    clock.update_timestamp(timestamp);
     buffer.write_tagged(Trace::trace_packet_tag, sequence_id, track_event, timestamp);
+  }
+
+  template <typename TrackEvent>
+  NOINLINE void write_begin(const TrackEvent& track_event) {
+    proto::buffer<12> timestamp;
+    clock.update_timestamp(timestamp);
+    write_begin(timestamp, track_event);
   }
 
   NOINLINE void write_end() {
@@ -598,7 +622,8 @@ public:
 
     timestamp_type timestamp;
     track.clock.update_timestamp(timestamp);
-    buffer.write_tagged(Trace::trace_packet_tag, track.sequence_id, slice_begin_mutex_locked, timestamp);
+    buffer.write_tagged(Trace::trace_packet_tag, track.sequence_id,
+        make_slice_begin(event_type::mutex_locked, reinterpret_cast<uintptr_t>(mutex)), timestamp);
   }
 
   NOINLINE void write_end_mutex_locked(const char* type, const void* mutex) {
@@ -679,7 +704,7 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
-  t.write_begin(slice_begin_cond_timedwait);
+  t.write_begin(make_slice_begin(event_type::cond_timedwait, reinterpret_cast<uintptr_t>(mutex)));
   if (!hooks::pthread_cond_timedwait)
     hooks::init(hooks::pthread_cond_timedwait, __pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
   int result = hooks::pthread_cond_timedwait(cond, mutex, abstime);
@@ -692,7 +717,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
-  t.write_begin(slice_begin_cond_wait);
+  t.write_begin(make_slice_begin(event_type::cond_wait, reinterpret_cast<uintptr_t>(mutex)));
   if (!hooks::pthread_cond_wait)
     hooks::init(hooks::pthread_cond_wait, __pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
   int result = hooks::pthread_cond_wait(cond, mutex);
@@ -712,7 +737,7 @@ int pthread_join(pthread_t thread, void** value_ptr) {
 
 int pthread_mutex_lock(pthread_mutex_t* mutex) {
   auto& t = track::get_thread();
-  t.write_begin(slice_begin_mutex_lock);
+  t.write_begin(make_slice_begin(event_type::mutex_lock, reinterpret_cast<uintptr_t>(mutex)));
   if (!hooks::pthread_mutex_lock) hooks::init(hooks::pthread_mutex_lock, __pthread_mutex_lock, "pthread_mutex_lock");
   int result = hooks::pthread_mutex_lock(mutex);
   t.write_end();
@@ -722,7 +747,7 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
 
 int pthread_mutex_trylock(pthread_mutex_t* mutex) {
   auto& t = track::get_thread();
-  t.write_begin(slice_begin_mutex_trylock);
+  t.write_begin(make_slice_begin(event_type::mutex_trylock, reinterpret_cast<uintptr_t>(mutex)));
   if (!hooks::pthread_mutex_trylock)
     hooks::init(hooks::pthread_mutex_trylock, __pthread_mutex_trylock, "pthread_mutex_trylock");
   int result = hooks::pthread_mutex_trylock(mutex);
@@ -736,7 +761,8 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
 int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
-  t.write_begin(slice_begin_mutex_unlock);
+  t.write_begin(make_slice_begin(
+      event_type::mutex_unlock, reinterpret_cast<uintptr_t>(mutex), track_event_terminate_flow_ids_tag));
   if (!hooks::pthread_mutex_unlock)
     hooks::init(hooks::pthread_mutex_unlock, __pthread_mutex_unlock, "pthread_mutex_unlock");
   int result = hooks::pthread_mutex_unlock(mutex);
