@@ -353,7 +353,7 @@ constexpr auto slice_begin_sleep = make_slice_begin(event_type::sleep);
 constexpr auto slice_begin_usleep = make_slice_begin(event_type::usleep);
 constexpr auto slice_begin_nanosleep = make_slice_begin(event_type::nanosleep);
 
-constexpr proto::buffer<2> timestamp_zero(
+constexpr proto::buffer<2> prev_timestamp(
     {{make_tag(static_cast<uint64_t>(TracePacket::timestamp), proto::wire_type::varint), static_cast<uint64_t>(0)}});
 
 const char* to_string(event_type t) {
@@ -392,6 +392,9 @@ void write_interned_data(proto::buffer<N>& buf) {
 
 constexpr size_t block_size_kb = 32;
 constexpr size_t block_size = block_size_kb * 1024;
+
+// Incremental timestamps can be tricky, this disables them for debugging purposes.
+constexpr bool enable_incremental_timestamps = true;
 
 class circular_file {
   int fd = 0;
@@ -485,7 +488,7 @@ class thread_state {
     proto::buffer<32> clock;
     clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), clock_id);
     clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), static_cast<uint64_t>(0));
-    clock.write_tagged(static_cast<uint64_t>(Clock::is_incremental), true);
+    clock.write_tagged(static_cast<uint64_t>(Clock::is_incremental), enable_incremental_timestamps);
 
     proto::buffer<32> boottime_clock;
     boottime_clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), static_cast<uint64_t>(BuiltinClocks::BOOTTIME));
@@ -541,8 +544,10 @@ class thread_state {
     }
   }
 
-  NOINLINE void write_sequence_header() {
-    t0 = std::chrono::high_resolution_clock::now();
+  NOINLINE void write_sequence_header(bool first = false) {
+    if (first || enable_incremental_timestamps) {
+      t0 = std::chrono::high_resolution_clock::now();
+    }
 
     write_track_descriptor();
     write_clock_snapshot();
@@ -563,15 +568,17 @@ class thread_state {
     }
   }
 
-  void make_delta_timestamp(proto::buffer<16>& timestamp) {
+  void make_timestamp(proto::buffer<16>& timestamp) {
     // For some reason I haven't been able to figure out, timestamps can get out of order when crossing block
     // boundaries. We can fix this by subtracting a small error from the timestamp deltas we emit. Error accumulates
     // within each block. However, at block boundaries, we reset the incremental timestamps to the global absolute time,
     // so the error accumulation is limited.
-    constexpr uint64_t fudge_time_ns = 1;
+    constexpr uint64_t fudge_time_ns = enable_incremental_timestamps ? 1 : 0;
     auto now = std::chrono::high_resolution_clock::now();
     uint64_t delta = std::chrono::duration_cast<std::chrono::nanoseconds>(now - t0).count() - fudge_time_ns;
-    t0 = now;
+    if (enable_incremental_timestamps) {
+      t0 = now;
+    }
     timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), delta);
   }
 
@@ -580,7 +587,7 @@ public:
     // This can't be 0, just use the thread id + 1 instead.
     trusted_packet_sequence_id.write_tagged(
         static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(id + 1));
-    write_sequence_header();
+    write_sequence_header(/*first=*/true);
   }
 
   ~thread_state() {
@@ -592,7 +599,7 @@ public:
   }
 
   template <size_t TimestampSize, typename TrackEvent>
-  void write_begin_with_delta(const proto::buffer<TimestampSize>& timestamp, const TrackEvent& track_event) {
+  void write_begin_with_timestamp(const proto::buffer<TimestampSize>& timestamp, const TrackEvent& track_event) {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
@@ -601,11 +608,20 @@ public:
   }
 
   template <typename TrackEvent>
+  void write_begin(const proto::buffer<2>& timestamp, const TrackEvent& track_event) {
+    if (enable_incremental_timestamps) {
+      write_begin_with_timestamp(timestamp, track_event);
+    } else {
+      write_begin(track_event);
+    }
+  }
+
+  template <typename TrackEvent>
   void write_begin(const TrackEvent& track_event) {
     proto::buffer<16> timestamp;
-    make_delta_timestamp(timestamp);
+    make_timestamp(timestamp);
 
-    write_begin_with_delta(timestamp, track_event);
+    write_begin_with_timestamp(timestamp, track_event);
   }
 
   void write_end() {
@@ -613,7 +629,7 @@ public:
     flush(message_capacity);
 
     proto::buffer<16> timestamp;
-    make_delta_timestamp(timestamp);
+    make_timestamp(timestamp);
 
     buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, slice_end, timestamp);
   }
@@ -623,7 +639,7 @@ public:
     for (size_t i = 0; i < max_unique_mutex; ++i) {
       if (mutex_locked_event[i].first == mutex) {
         // We've already named this mutex locked event.
-        write_begin_with_delta(timestamp_zero, mutex_locked_event[i].second);
+        write_begin(prev_timestamp, mutex_locked_event[i].second);
         return;
       } else if (!mutex_locked_event[i].first) {
         // Add a new mutex locked event.
@@ -649,15 +665,23 @@ public:
         flush(message_capacity);
 
         // mutex locked always occurs immediately after the previous event.
-        buffer.write_tagged(
-            trace_packet_tag, trusted_packet_sequence_id, mutex_locked_event[i].second, interned_data, timestamp_zero);
+        if (enable_incremental_timestamps) {
+          buffer.write_tagged(trace_packet_tag, trusted_packet_sequence_id, mutex_locked_event[i].second, interned_data,
+              prev_timestamp);
+        } else {
+          proto::buffer<16> timestamp;
+          make_timestamp(timestamp);
+
+          buffer.write_tagged(
+              trace_packet_tag, trusted_packet_sequence_id, mutex_locked_event[i].second, interned_data, timestamp);
+        }
         return;
       }
     }
 
     // If we got here, we didn't find this mutex in our list, and we don't have room for any more unqiue mutex messages.
     // Just write a generic (mutex locked) message.
-    write_begin_with_delta(timestamp_zero, slice_begin_mutex_locked);
+    write_begin(prev_timestamp, slice_begin_mutex_locked);
   }
 
   static thread_state& get() {
@@ -805,7 +829,7 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = thread_state::get();
   t.write_end();  // slice_begin_mutex_locked
-  t.write_begin_with_delta(timestamp_zero, slice_begin_cond_timedwait);
+  t.write_begin(prev_timestamp, slice_begin_cond_timedwait);
   int result = hooks::pthread_cond_timedwait(cond, mutex, abstime);
   t.write_end();  // slice_begin_cond_timedwait
   t.write_begin_mutex_locked(mutex);
@@ -818,7 +842,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = thread_state::get();
   t.write_end();  // slice_begin_mutex_locked
-  t.write_begin_with_delta(timestamp_zero, slice_begin_cond_wait);
+  t.write_begin(prev_timestamp, slice_begin_cond_wait);
   int result = hooks::pthread_cond_wait(cond, mutex);
   t.write_end();  // slice_begin_cond_wait
   t.write_begin_mutex_locked(mutex);
@@ -867,7 +891,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   // results in confusing traces.
   auto& t = thread_state::get();
   t.write_end();  // slice_begin_mutex_locked
-  t.write_begin_with_delta(timestamp_zero, slice_begin_mutex_unlock);
+  t.write_begin(prev_timestamp, slice_begin_mutex_unlock);
   int result = hooks::pthread_mutex_unlock(mutex);
   t.write_end();  // slice_begin_mutex_unlock
   return result;
