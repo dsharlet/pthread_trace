@@ -137,11 +137,12 @@ class circular_file {
         // Remove blocks we didn't write anything to.
         int result = ftruncate(fd, size);
         (void)result;
+        size_ = size;
       }
       ::close(fd);
       fd = -1;
 
-      fprintf(stderr, "pthread_trace: Recorded %zu KB trace\n", size / 1024);
+      fprintf(stderr, "pthread_trace: Recorded %zu KB trace, saved most recent %zu KB\n", size / 1024, size_ / 1024);
     }
   }
 
