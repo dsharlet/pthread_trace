@@ -13,14 +13,14 @@
 
 #include <atomic>
 #include <cassert>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <cstdio>
 #include <thread>
 
-#include "proto.h"
 #include "perfetto.h"
+#include "proto.h"
 
 #define NOINLINE __attribute__((noinline))
 #define INLINE __attribute__((always_inline))
@@ -31,7 +31,8 @@ namespace {
 
 constexpr proto::buffer<2> sequence_flags_cleared(
     {{make_tag(static_cast<uint64_t>(TracePacket::sequence_flags), proto::wire_type::varint),
-        static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED)}});
+        static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED)}},
+    /*size=*/2);
 
 // The trace events we support.
 enum class event_type : uint8_t {
@@ -59,11 +60,12 @@ constexpr uint8_t track_event_type_tag = make_tag(static_cast<uint64_t>(TrackEve
 
 constexpr proto::buffer<6> make_slice_begin(event_type event) {
   return proto::buffer<6>({{track_event_tag, 4, track_event_type_tag, static_cast<uint64_t>(EventType::SLICE_BEGIN),
-      name_iid_tag, static_cast<uint8_t>(event)}});
+                              name_iid_tag, static_cast<uint8_t>(event)}},
+      /*size=*/6);
 }
 
 constexpr proto::buffer<4> slice_end(
-    {{track_event_tag, 2, track_event_type_tag, static_cast<uint64_t>(EventType::SLICE_END)}});
+    {{track_event_tag, 2, track_event_type_tag, static_cast<uint64_t>(EventType::SLICE_END)}}, /*size=*/4);
 
 constexpr auto slice_begin_cond_broadcast = make_slice_begin(event_type::cond_broadcast);
 constexpr auto slice_begin_cond_signal = make_slice_begin(event_type::cond_signal);
@@ -133,7 +135,8 @@ class circular_file {
     if (fd >= 0) {
       if (next_.load() < size_) {
         // Remove blocks we didn't write anything to.
-        ftruncate(fd, next_.load());
+        int result = ftruncate(fd, next_.load());
+        (void)result;
       }
       ::close(fd);
       fd = -1;
@@ -208,7 +211,7 @@ constexpr uint64_t clock_id = 64;
 using timestamp_type = proto::buffer<12>;
 
 class incremental_clock {
-  uint64_t t0 = 0;
+  uint64_t t0;
 
   static uint64_t now_ns() {
     timespec t;

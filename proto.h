@@ -1,10 +1,10 @@
 #ifndef PTHREAD_TRACE_PROTO_H
 #define PTHREAD_TRACE_PROTO_H
 
-#include <cassert>
 #include <array>
-#include <cstdint>
+#include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 
 namespace proto {
@@ -28,7 +28,7 @@ enum class wire_type {
 
 constexpr uint8_t varint_continuation = 0x80;
 
-// Convert an integer to a varint. May overflow if the result doesn't fit in 64 bits.
+// Convert an integer to a varint. May overflow if the result doesn't fit in 64 bits, but can be used constexpr.
 constexpr uint64_t to_varint(uint64_t value) {
   uint64_t result = 0;
   while (value > 0x7f) {
@@ -129,7 +129,8 @@ class buffer {
 
 public:
   constexpr buffer() : size_(0) {}
-  explicit constexpr buffer(const std::array<uint8_t, Capacity>& raw) : buf_(raw), size_(raw.size()) {}
+  explicit constexpr buffer(const std::array<uint8_t, Capacity>& raw) : buffer(raw, raw.size()) {}
+  explicit constexpr buffer(const std::array<uint8_t, Capacity>& raw, size_t size) : buf_(raw), size_(size) {}
 
   static constexpr size_t capacity() { return Capacity; }
 
