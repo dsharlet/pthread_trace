@@ -39,12 +39,13 @@ enum class wire_type {
   i32 = 5,
 };
 
+constexpr uint8_t varint_continuation = 0x80;
+
 // Convert an integer to a varint. May overflow if the result doesn't fit in 64 bits.
 constexpr uint64_t to_varint(uint64_t value) {
-  constexpr uint8_t continuation = 0x80;
   uint64_t result = 0;
   while (value > 0x7f) {
-    result |= static_cast<uint8_t>(value | continuation);
+    result |= static_cast<uint8_t>(value | varint_continuation);
     result <<= 8;
     value >>= 7;
   }
@@ -53,11 +54,10 @@ constexpr uint64_t to_varint(uint64_t value) {
 }
 
 size_t write_varint(uint8_t* dst, uint64_t value) {
-  constexpr uint8_t continuation = 0x80;
   // clang-format on
   size_t result = 0;
   while (value > 0x7f) {
-    dst[result++] = static_cast<uint8_t>(value | continuation);
+    dst[result++] = static_cast<uint8_t>(value | varint_continuation);
     value >>= 7;
   }
   dst[result++] = static_cast<uint8_t>(value);
@@ -147,6 +147,11 @@ public:
     write(buf.data(), buf.size());
   }
 
+  template <size_t M>
+  void write(const std::array<uint8_t, M>& buf) {
+    write(buf.data(), buf.size());
+  }
+
   void write(std::initializer_list<uint8_t> data) {
     assert(size_ + data.size() <= Capacity);
     for (uint8_t i : data) {
@@ -159,16 +164,6 @@ public:
     assert(size_ + 2 <= Capacity);
     memcpy(&buf_[size_], buf.data(), 2);
     size_ += 2;
-  }
-  void write(const buffer<4>& buf) {
-    assert(buf.size() >= 2);
-    assert(size_ + buf.size() <= Capacity);
-    switch (buf.size()) {
-    case 4: memcpy(&buf_[size_], buf.data(), 4); break;
-    case 3: memcpy(&buf_[size_], buf.data(), 3); break;
-    case 2: memcpy(&buf_[size_], buf.data(), 2); break;
-    }
-    size_ += buf.size();
   }
 
   // Write a tag.
@@ -477,10 +472,21 @@ constexpr uint64_t clock_id = 64;
 
 static std::atomic<int> next_track_id{0};
 static std::atomic<int> next_sequence_id{0};
-// We store sequence IDs in 3 byte varints.
-constexpr int sequence_id_mask = (1 << 21) - 1;
 
-int new_sequence_id() { return (++next_sequence_id) & sequence_id_mask; }
+// Sequence IDs are fixed size 3 byte varints.
+using sequence_id_type = std::array<uint8_t, 4>;
+
+sequence_id_type new_sequence_id() {
+  static constexpr uint8_t tag =
+      make_tag(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), proto::wire_type::varint);
+  uint64_t id = proto::to_varint(++next_sequence_id);
+  sequence_id_type result;
+  result[0] = tag;
+  result[1] = static_cast<uint8_t>(id) | proto::varint_continuation;
+  result[2] = static_cast<uint8_t>(id >> 8) | proto::varint_continuation;
+  result[3] = static_cast<uint8_t>(id >> 16) & ~proto::varint_continuation;
+  return result;
+}
 
 class incremental_clock {
   uint64_t t0 = 0;
@@ -506,7 +512,7 @@ public:
   }
 
   template <size_t N>
-  NOINLINE void write_clock_snapshot(proto::buffer<N>& buffer, const proto::buffer<4>& sequence_id) {
+  NOINLINE void write_clock_snapshot(proto::buffer<N>& buffer, const sequence_id_type& sequence_id) {
     if (!clock_id) return;
 
     t0 = now_ns();
@@ -533,7 +539,7 @@ public:
 
 class track {
   int id;
-  proto::buffer<4> sequence_id;
+  std::array<uint8_t, 4> sequence_id;
 
   proto::buffer<block_size> buffer;
 
@@ -545,7 +551,7 @@ class track {
   // events. The trace parser will reassemble the events from the different tracks (with the same IDs) into one track.
   struct mutex_track {
     const void* mutex;
-    proto::buffer<4> sequence_id;
+    sequence_id_type sequence_id;
     incremental_clock clock;
   };
 
@@ -554,7 +560,7 @@ class track {
   std::array<mutex_track, mutexes_per_thread> mutex_tracks;
 
   NOINLINE void write_track_descriptor(
-      uint64_t id, const char* name_str, const proto::buffer<512>& interned_data, const proto::buffer<4>& sequence_id) {
+      uint64_t id, const char* name_str, const proto::buffer<512>& interned_data, const sequence_id_type& sequence_id) {
     // Write the thread descriptor once.
     proto::buffer<12> uuid;
     uuid.write_tagged(static_cast<uint64_t>(TrackDescriptor::uuid), id);
@@ -597,9 +603,7 @@ class track {
     flush(256);
 
     track.mutex = mutex;
-    assert(track.sequence_id.empty());
-    track.sequence_id.write_tagged(
-        static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(new_sequence_id()));
+    track.sequence_id = new_sequence_id();
 
     char mutex_locked_str[16];
     snprintf(mutex_locked_str, sizeof(mutex_locked_str), "(locked by %d)", id);
@@ -638,9 +642,7 @@ class track {
 
   NOINLINE void begin_block(bool first = false) {
     if (first || clock_id) {
-      sequence_id.clear();
-      sequence_id.write_tagged(
-          static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), static_cast<uint64_t>(new_sequence_id()));
+      sequence_id = new_sequence_id();
     }
 
     write_track_descriptor();
