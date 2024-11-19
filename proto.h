@@ -56,9 +56,11 @@ size_t write_tag(uint8_t* dst, uint64_t tag, wire_type type) {
   return write_varint(dst, (tag << 3) | static_cast<uint64_t>(type));
 }
 
+// Size must be >= 2.
 size_t write_padding(uint8_t* dst, uint64_t tag, uint64_t size) {
   size_t result = 0;
   while (size != 0) {
+    assert(size != 1);
     size_t tag_size = write_tag(dst, tag, wire_type::len);
     dst += tag_size;
     result += tag_size;
@@ -76,6 +78,7 @@ size_t write_padding(uint8_t* dst, uint64_t tag, uint64_t size) {
     // If we got here, the size bumped over a threshold of varint size. Write 0 and try again.
     *dst++ = 0;
     result += 1;
+    assert(size > 0);
     size -= 1;
   }
   return result;

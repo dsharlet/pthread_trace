@@ -168,7 +168,7 @@ public:
 
     // Initialize all the blocks with padding.
     for (size_t i = 0; i < size_; i += block_size) {
-      proto::write_padding(buffer_ + i, 2, block_size);
+      proto::write_padding(buffer_ + i, padding_tag, block_size);
     }
   }
 
