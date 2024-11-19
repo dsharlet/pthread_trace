@@ -191,6 +191,36 @@ public:
 std::unique_ptr<circular_file> file;
 std::unique_ptr<proto::buffer<512>> interned_data;
 
+const char* getenv_or(const char* env, const char* def) {
+  const char* s = getenv(env);
+  return s ? s : def;
+}
+
+pthread_once_t init_once = PTHREAD_ONCE_INIT;
+
+NOINLINE void init_trace() {
+  // Use the real pthread_once to handle initialization.
+  typedef int (*once_fn_t)(pthread_once_t*, void (*)());
+  once_fn_t real_once = (once_fn_t)dlsym(RTLD_NEXT, "pthread_once");
+
+  real_once(&init_once, []() {
+    const char* path = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
+    const char* buffer_size_str = getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536");
+    int buffer_size_kb = atoi(buffer_size_str);
+    int blocks = (buffer_size_kb + block_size_kb - 1) / block_size_kb;
+    if (blocks <= 0) {
+      fprintf(stderr, "pthread_trace: Invalid buffer size %d (%s).\n", buffer_size_kb, buffer_size_str);
+      exit(1);
+    }
+
+    file = std::make_unique<circular_file>(path, blocks);
+    fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
+
+    interned_data = std::make_unique<proto::buffer<512>>();
+    write_interned_data(*interned_data);
+  });
+}
+
 // Sequence IDs are fixed size 3 byte varints.
 using sequence_id_type = std::array<uint8_t, 4>;
 
@@ -391,7 +421,10 @@ class track {
   }
 
 public:
-  NOINLINE track() : id(next_track_id++) { begin_block(/*first=*/true); }
+  NOINLINE track() : id(next_track_id++) {
+    init_trace();
+    begin_block(/*first=*/true);
+  }
 
   NOINLINE ~track() {
     if (buffer.size() > 0) {
@@ -449,36 +482,6 @@ public:
   }
 };
 
-const char* getenv_or(const char* env, const char* def) {
-  const char* s = getenv(env);
-  return s ? s : def;
-}
-
-pthread_once_t init_once = PTHREAD_ONCE_INIT;
-
-NOINLINE void init_trace() {
-  // Use the real pthread_once to handle initialization.
-  typedef int (*once_fn_t)(pthread_once_t*, void (*)());
-  once_fn_t real_once = (once_fn_t)dlsym(RTLD_NEXT, "pthread_once");
-
-  real_once(&init_once, []() {
-    const char* path = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
-    const char* buffer_size_str = getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536");
-    int buffer_size_kb = atoi(buffer_size_str);
-    int blocks = (buffer_size_kb + block_size_kb - 1) / block_size_kb;
-    if (blocks <= 0) {
-      fprintf(stderr, "pthread_trace: Invalid buffer size %d (%s).\n", buffer_size_kb, buffer_size_str);
-      exit(1);
-    }
-
-    file = std::make_unique<circular_file>(path, blocks);
-    fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
-
-    interned_data = std::make_unique<proto::buffer<512>>();
-    write_interned_data(*interned_data);
-  });
-}
-
 namespace hooks {
 
 unsigned int (*sleep)(unsigned int) = nullptr;
@@ -497,7 +500,6 @@ int (*pthread_once)(pthread_once_t* once_control, void (*init_routine)()) = null
 
 template <typename T>
 NOINLINE void init(T& hook, const char* name, const char* version = nullptr) {
-  init_trace();
   T result;
   if (version) {
     result = (T)dlvsym(RTLD_NEXT, name, version);
