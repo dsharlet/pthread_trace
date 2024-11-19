@@ -146,10 +146,22 @@ public:
   constexpr uint8_t operator[](size_t i) const { return buf_[i]; }
 
   // Write objects directly to the buffer, without any tags.
-  void write(const void* s, size_t n) {
+  void write(const uint8_t* s, size_t n) {
     assert(size_ + n <= Capacity);
-    std::memcpy(&buf_[size_], s, n);
+    if (n == 2) {
+      // It is extremely common to write 2 bytes (one byte tag + one byte varint).
+      buf_[size_] = s[0];
+      buf_[size_ + 1] = s[1];
+    } else {
+      std::memcpy(&buf_[size_], s, n);
+    }
     size_ += n;
+  }
+
+  void write(const buffer<2>& buf) {
+    // This special case gives a constexpr size of 2.
+    assert(buf.size() == 2);
+    write(buf.data(), 2);
   }
 
   template <size_t M>
@@ -169,12 +181,6 @@ public:
     }
   }
 
-  void write(const buffer<2>& buf) {
-    assert(buf.size() == 2);
-    assert(size_ + 2 <= Capacity);
-    memcpy(&buf_[size_], buf.data(), 2);
-    size_ += 2;
-  }
 
   // Write a tag.
   void write_tag(uint64_t tag, wire_type type) { write_varint((tag << 3) | static_cast<uint64_t>(type)); }
@@ -201,7 +207,7 @@ public:
     write_tag(tag, wire_type::len);
     std::size_t len = strlen(str);
     write_varint(len);
-    write(str, len);
+    write(reinterpret_cast<const uint8_t*>(str), len);
   }
 
   template <typename... Fields>
