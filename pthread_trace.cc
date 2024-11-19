@@ -487,14 +487,10 @@ public:
 std::unique_ptr<circular_file> file;
 std::unique_ptr<proto::buffer<512>> interned_data;
 
-// Set this to 0 to disable incremental timestamps (for debugging).
-constexpr uint64_t clock_id = 64;
-
-static std::atomic<int> next_track_id{0};
-static std::atomic<int> next_sequence_id{0};
-
 // Sequence IDs are fixed size 3 byte varints.
 using sequence_id_type = std::array<uint8_t, 4>;
+
+static std::atomic<int> next_sequence_id{0};
 
 sequence_id_type new_sequence_id() {
   static constexpr uint8_t tag =
@@ -508,6 +504,11 @@ sequence_id_type new_sequence_id() {
   return result;
 }
 
+// Set this to 0 to disable incremental timestamps (for debugging).
+constexpr uint64_t clock_id = 64;
+
+using timestamp_type = proto::buffer<12>;
+
 class incremental_clock {
   uint64_t t0 = 0;
 
@@ -518,7 +519,7 @@ class incremental_clock {
 
 public:
   // Write a timestamp for the current time for use in the sequence `sequence_id` passed to `write_clock_snapshot`.
-  void update_timestamp(proto::buffer<12>& timestamp) {
+  void update_timestamp(timestamp_type& timestamp) {
     uint64_t now = now_ns();
     uint64_t value;
     if (clock_id) {
@@ -556,6 +557,8 @@ public:
     buffer.write_tagged(trace_packet_tag, clock_snapshot, sequence_id);
   }
 };
+
+static std::atomic<int> next_track_id{0};
 
 class track {
   int id;
@@ -701,7 +704,7 @@ public:
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    proto::buffer<12> timestamp;
+    timestamp_type timestamp;
     clock.update_timestamp(timestamp);
     buffer.write_tagged(trace_packet_tag, sequence_id, track_event, timestamp);
   }
@@ -710,7 +713,7 @@ public:
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
-    proto::buffer<12> timestamp;
+    timestamp_type timestamp;
     clock.update_timestamp(timestamp);
     buffer.write_tagged(trace_packet_tag, sequence_id, slice_end, timestamp);
   }
@@ -722,7 +725,7 @@ public:
 
     mutex_track& track = get_mutex_track(mutex);
 
-    proto::buffer<12> timestamp;
+    timestamp_type timestamp;
     track.clock.update_timestamp(timestamp);
     buffer.write_tagged(trace_packet_tag, track.sequence_id, slice_begin_mutex_locked, timestamp);
   }
@@ -733,7 +736,7 @@ public:
 
     mutex_track& track = get_mutex_track(mutex);
 
-    proto::buffer<12> timestamp;
+    timestamp_type timestamp;
     track.clock.update_timestamp(timestamp);
     buffer.write_tagged(trace_packet_tag, track.sequence_id, slice_end, timestamp);
   }
