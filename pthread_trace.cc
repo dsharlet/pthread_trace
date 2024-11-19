@@ -44,13 +44,14 @@ enum class event_type : uint8_t {
   mutex_lock,
   mutex_trylock,
   mutex_unlock,
-  mutex_locked,
   once,
   yield,
   sleep,
   usleep,
   nanosleep,
-  count,
+  interned_count,
+
+  mutex_locked,
 };
 
 constexpr uint8_t name_iid_tag = make_tag(TrackEvent::name_iid, proto::wire_type::varint);
@@ -80,7 +81,7 @@ constexpr auto slice_begin_sleep = make_slice_begin(event_type::sleep);
 constexpr auto slice_begin_usleep = make_slice_begin(event_type::usleep);
 constexpr auto slice_begin_nanosleep = make_slice_begin(event_type::nanosleep);
 
-const char* to_string(event_type t) {
+const char* to_interned_string(event_type t) {
   switch (t) {
   case event_type::cond_broadcast: return "pthread_cond_broadcast";
   case event_type::cond_signal: return "pthread_cond_signal";
@@ -90,14 +91,14 @@ const char* to_string(event_type t) {
   case event_type::mutex_lock: return "pthread_mutex_lock";
   case event_type::mutex_trylock: return "pthread_mutex_trylock";
   case event_type::mutex_unlock: return "pthread_mutex_unlock";
-  case event_type::mutex_locked: return "(mutex locked)";
   case event_type::once: return "pthread_once";
   case event_type::yield: return "sched_yield";
   case event_type::sleep: return "sleep";
   case event_type::usleep: return "usleep";
   case event_type::nanosleep: return "nanosleep";
   case event_type::none:
-  case event_type::count: break;
+  case event_type::mutex_locked:  // Handled elsewhere, doesn't need to be interned.
+  case event_type::interned_count: break;
   }
   return nullptr;
 }
@@ -105,10 +106,10 @@ const char* to_string(event_type t) {
 template <size_t N>
 void write_interned_data(proto::buffer<N>& buf) {
   proto::buffer<N> event_names;
-  for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
+  for (size_t i = 1; i < static_cast<size_t>(event_type::interned_count); ++i) {
     proto::buffer<64> event_name;
     event_name.write_tagged(EventName::iid, i);
-    event_name.write_tagged(EventName::name, to_string(static_cast<event_type>(i)));
+    event_name.write_tagged(EventName::name, to_interned_string(static_cast<event_type>(i)));
     event_names.write_tagged(InternedData::event_names, event_name);
   }
   buf.write_tagged(TracePacket::interned_data, event_names);
@@ -286,7 +287,6 @@ class track {
 
   NOINLINE void write_track_descriptor(
       uint64_t id, const char* name_str, const proto::buffer<512>& interned_data, const sequence_id_type& sequence_id) {
-    // Write the thread descriptor once.
     proto::buffer<12> uuid;
     uuid.write_tagged(TrackDescriptor::uuid, id);
 
