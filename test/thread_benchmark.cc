@@ -2,6 +2,7 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <semaphore.h>
 #include <thread>
 
 void BM_uncontended_mutex(benchmark::State& state) {
@@ -75,3 +76,33 @@ void BM_multiple_locks(benchmark::State& state) {
 }
 
 BENCHMARK(BM_multiple_locks)->RangeMultiplier(2)->Range(2, 16);
+
+void BM_semaphore(benchmark::State& state) {
+  std::vector<std::thread> threads;
+  sem_t sem;
+  sem_init(&sem, 0, 3);
+
+  std::atomic<bool> run{true};
+
+  for (int i = 0; i < state.range(0); ++i) {
+    threads.emplace_back([&]() {
+      while (run) {
+        sem_wait(&sem);
+        sem_post(&sem);
+      }
+    });
+  }
+
+  for (auto _ : state) {
+    sem_wait(&sem);
+    sem_post(&sem);
+  }
+  run = false;
+  for (auto& i : threads) {
+    i.join();
+  }
+
+  sem_destroy(&sem);
+}
+
+BENCHMARK(BM_semaphore)->RangeMultiplier(2)->Range(2, 16);
