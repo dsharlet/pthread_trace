@@ -133,13 +133,16 @@ class circular_file {
       buffer_ = nullptr;
     }
     if (fd >= 0) {
-      if (next_.load() < size_) {
+      size_t size = next_.load();
+      if (size < size_) {
         // Remove blocks we didn't write anything to.
-        int result = ftruncate(fd, next_.load());
+        int result = ftruncate(fd, size);
         (void)result;
       }
       ::close(fd);
       fd = -1;
+
+      fprintf(stderr, "pthread_trace: Recorded %zu KB trace\n", size / 1024);
     }
   }
 
