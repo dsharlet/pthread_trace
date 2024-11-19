@@ -13,7 +13,6 @@
 
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -513,8 +512,9 @@ class incremental_clock {
   uint64_t t0 = 0;
 
   static uint64_t now_ns() {
-    auto now = std::chrono::high_resolution_clock::now();
-    return std::chrono::time_point_cast<std::chrono::nanoseconds>(now).time_since_epoch().count();
+    timespec t;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &t);
+    return static_cast<uint64_t>(t.tv_sec) * 1000000000 + t.tv_nsec;
   }
 
 public:
