@@ -334,7 +334,7 @@ class track {
     snprintf(mutex_locked_str, sizeof(mutex_locked_str), "(locked by %d)", id);
 
     proto::buffer<32> event_name;
-    event_name.write_tagged(static_cast<uint64_t>(EventName::iid), static_cast<uint64_t>(event_type::mutex_locked));
+    event_name.write_tagged(EventName::iid, static_cast<uint64_t>(event_type::mutex_locked));
     event_name.write_tagged(EventName::name, static_cast<const char*>(mutex_locked_str));
 
     proto::buffer<32> event_names;
