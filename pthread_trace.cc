@@ -24,9 +24,9 @@
 
 namespace {
 
-size_t sum() { return 0; }
+constexpr size_t sum() { return 0; }
 template <class... Args>
-size_t sum(size_t a, Args... args) {
+constexpr size_t sum(size_t a, Args... args) {
   return a + sum(args...);
 }
 
@@ -54,7 +54,6 @@ constexpr uint64_t to_varint(uint64_t value) {
 }
 
 size_t write_varint(uint8_t* dst, uint64_t value) {
-  // clang-format on
   size_t result = 0;
   while (value > 0x7f) {
     dst[result++] = static_cast<uint8_t>(value | varint_continuation);
@@ -93,6 +92,18 @@ size_t write_padding(uint8_t* dst, uint64_t tag, uint64_t size) {
     size -= 1;
   }
   return result;
+}
+
+template <size_t Capacity>
+class buffer;
+
+template <size_t N>
+constexpr size_t capacity_of(const buffer<N>&) {
+  return N;
+}
+template <typename T, size_t N>
+constexpr size_t capacity_of(const std::array<T, N>&) {
+  return N;
 }
 
 // Writing protobufs is a bit tricky, because you need to know the size of child messages before writing the parent
@@ -197,7 +208,16 @@ public:
   template <typename... Fields>
   void write_tagged(uint64_t tag, const Fields&... fields) {
     write_tag(tag, wire_type::len);
-    write_varint(sum(fields.size()...));
+    // This branch avoids varint encoding for most use cases.
+    // TODO: Try to make this constexpr.
+    size_t capacity = sum(capacity_of(fields)...);
+    size_t size = sum(fields.size()...);
+    assert(size <= capacity);
+    if (capacity < 0x80) {
+      buf_[size_++] = size;
+    } else {
+      write_varint(size);
+    }
     write_all(fields...);
   }
 };
