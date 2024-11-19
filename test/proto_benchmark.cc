@@ -53,4 +53,3 @@ void BM_write_padding(benchmark::State& state) {
 }
 
 BENCHMARK(BM_write_padding)->DenseRange(5, 10);
-

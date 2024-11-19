@@ -30,8 +30,7 @@ using namespace perfetto;
 namespace {
 
 constexpr proto::buffer<2> sequence_flags_cleared(
-    {{make_tag(TracePacket::sequence_flags, proto::wire_type::varint),
-        SequenceFlags::INCREMENTAL_STATE_CLEARED}},
+    {{make_tag(TracePacket::sequence_flags, proto::wire_type::varint), SequenceFlags::INCREMENTAL_STATE_CLEARED}},
     /*size=*/2);
 
 // The trace events we support.
@@ -59,13 +58,12 @@ constexpr uint8_t track_event_tag = make_tag(TracePacket::track_event, proto::wi
 constexpr uint8_t track_event_type_tag = make_tag(TrackEvent::type, proto::wire_type::varint);
 
 constexpr proto::buffer<6> make_slice_begin(event_type event) {
-  return proto::buffer<6>({{track_event_tag, 4, track_event_type_tag, EventType::SLICE_BEGIN,
-                              name_iid_tag, static_cast<uint8_t>(event)}},
+  return proto::buffer<6>(
+      {{track_event_tag, 4, track_event_type_tag, EventType::SLICE_BEGIN, name_iid_tag, static_cast<uint8_t>(event)}},
       /*size=*/6);
 }
 
-constexpr proto::buffer<4> slice_end(
-    {{track_event_tag, 2, track_event_type_tag, EventType::SLICE_END}}, /*size=*/4);
+constexpr proto::buffer<4> slice_end({{track_event_tag, 2, track_event_type_tag, EventType::SLICE_END}}, /*size=*/4);
 
 constexpr auto slice_begin_cond_broadcast = make_slice_begin(event_type::cond_broadcast);
 constexpr auto slice_begin_cond_signal = make_slice_begin(event_type::cond_signal);
@@ -197,8 +195,7 @@ using sequence_id_type = std::array<uint8_t, 4>;
 static std::atomic<int> next_sequence_id{0};
 
 sequence_id_type new_sequence_id() {
-  static constexpr uint8_t tag =
-      make_tag(TracePacket::trusted_packet_sequence_id, proto::wire_type::varint);
+  static constexpr uint8_t tag = make_tag(TracePacket::trusted_packet_sequence_id, proto::wire_type::varint);
   uint64_t id = proto::to_varint(++next_sequence_id);
   sequence_id_type result;
   result[0] = tag;
@@ -311,11 +308,10 @@ class track {
     track_event_defaults.write_tagged(TracePacketDefaults::track_event_defaults, track_uuid);
 
     proto::buffer<32> trace_packet_defaults;
-    trace_packet_defaults.write_tagged(
-        TracePacket::trace_packet_defaults, timestamp_clock_id, track_event_defaults);
+    trace_packet_defaults.write_tagged(TracePacket::trace_packet_defaults, timestamp_clock_id, track_event_defaults);
 
-    buffer.write_tagged(
-        Trace::trace_packet_tag, track_descriptor, trace_packet_defaults, interned_data, sequence_id, sequence_flags_cleared);
+    buffer.write_tagged(Trace::trace_packet_tag, track_descriptor, trace_packet_defaults, interned_data, sequence_id,
+        sequence_flags_cleared);
   }
 
   void write_track_descriptor() {
