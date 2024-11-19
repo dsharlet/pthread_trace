@@ -20,6 +20,7 @@
 #include <thread>
 
 #define NOINLINE __attribute__((noinline))
+#define INLINE __attribute__((always_inline))
 
 namespace {
 
@@ -705,8 +706,9 @@ public:
     }
   }
 
+  // This is inline so we can see constexpr track_events.
   template <typename TrackEvent>
-  NOINLINE void write_begin(const TrackEvent& track_event) {
+  INLINE void write_begin(const TrackEvent& track_event) {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
 
