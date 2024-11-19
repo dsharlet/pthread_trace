@@ -210,7 +210,7 @@ sequence_id_type new_sequence_id() {
 // Set this to 0 to disable incremental timestamps (for debugging).
 constexpr uint64_t clock_id = 64;
 
-using timestamp_type = proto::buffer<12>;
+using timestamp_type = std::array<uint8_t, 9>;
 
 class incremental_clock {
   uint64_t t0;
@@ -232,8 +232,9 @@ public:
     } else {
       value = now;
     }
-    timestamp.clear();
-    timestamp.write_tagged(TracePacket::timestamp, value);
+    static constexpr uint8_t tag = make_tag(static_cast<uint64_t>(TracePacket::timestamp), proto::wire_type::i64);
+    timestamp[0] = tag;
+    memcpy(&timestamp[1], &value, sizeof(value));
   }
 
   template <size_t N>
