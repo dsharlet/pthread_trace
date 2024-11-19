@@ -18,9 +18,6 @@ jobs:
 
       - name: Setup Cpp
         uses: aminya/setup-cpp@v1
-        
-      - name: Build pthread_trace.so
-        run: bazel build -c opt pthread_trace.so
 
       - name: Build and test
         run: bazel test --test_output=errors ...
