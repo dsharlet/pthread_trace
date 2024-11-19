@@ -22,12 +22,71 @@
 #include "perfetto.h"
 #include "proto.h"
 
-#define NOINLINE __attribute__((noinline))
-#define INLINE __attribute__((always_inline))
-
 using namespace perfetto;
 
+#define NOINLINE __attribute__((noinline))
+#define INLINE __attribute__((always_inline))
+#define WEAK __attribute__((weak))
+
+extern "C" {
+
+// In some environments, dlsym itself uses pthreads/sleep, which breaks our hooking mechanism.
+// These same environments have these non-standard-looking functions, so we can skip dlsym.
+// Mark these as weak in case they don't exist everywhere.
+WEAK unsigned int __sleep(unsigned int);
+WEAK int __usleep(useconds_t);
+WEAK int __nanosleep(const struct timespec*, struct timespec*);
+WEAK int __sched_yield();
+WEAK int __pthread_cond_broadcast(pthread_cond_t*);
+WEAK int __pthread_cond_signal(pthread_cond_t*);
+WEAK int __pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const struct timespec*);
+WEAK int __pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
+WEAK int __pthread_join(pthread_t, void**);
+WEAK int __pthread_mutex_lock(pthread_mutex_t*);
+WEAK int __pthread_mutex_trylock(pthread_mutex_t*);
+WEAK int __pthread_mutex_unlock(pthread_mutex_t*);
+WEAK int __pthread_once(pthread_once_t*, void (*)());
+
+}  // extern "C"
+
 namespace {
+
+namespace hooks {
+
+unsigned int (*sleep)(unsigned int) = __sleep;
+int (*usleep)(useconds_t) = __usleep;
+int (*nanosleep)(const struct timespec*, struct timespec*) = __nanosleep;
+int (*sched_yield)() = __sched_yield;
+int (*pthread_cond_broadcast)(pthread_cond_t*) = __pthread_cond_broadcast;
+int (*pthread_cond_signal)(pthread_cond_t*) = __pthread_cond_signal;
+int (*pthread_cond_timedwait)(pthread_cond_t*, pthread_mutex_t*, const struct timespec*) = __pthread_cond_timedwait;
+int (*pthread_cond_wait)(pthread_cond_t*, pthread_mutex_t*) = __pthread_cond_wait;
+int (*pthread_join)(pthread_t, void**) = __pthread_join;
+int (*pthread_mutex_lock)(pthread_mutex_t*) = __pthread_mutex_lock;
+int (*pthread_mutex_trylock)(pthread_mutex_t*) = __pthread_mutex_trylock;
+int (*pthread_mutex_unlock)(pthread_mutex_t*) = __pthread_mutex_unlock;
+int (*pthread_once)(pthread_once_t*, void (*)()) = __pthread_once;
+
+template <typename T>
+NOINLINE void init(T& hook, const char* name, const char* version = nullptr) {
+  if (hook) return;
+
+  T result;
+  if (version) {
+    result = (T)dlvsym(RTLD_NEXT, name, version);
+  } else {
+    result = (T)dlsym(RTLD_NEXT, name);
+  }
+  if (!result) {
+    fprintf(stderr, "Failed to find %s\n", name);
+    exit(1);
+  }
+
+  // This might run on more than one thread, this is a benign race.
+  __atomic_store_n(&hook, result, __ATOMIC_RELAXED);
+}
+
+}  // namespace hooks
 
 constexpr proto::buffer<2> sequence_flags_cleared(
     {{make_tag(TracePacket::sequence_flags, proto::wire_type::varint), SequenceFlags::INCREMENTAL_STATE_CLEARED}},
@@ -199,11 +258,22 @@ const char* getenv_or(const char* env, const char* def) {
 pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
 NOINLINE void init_trace() {
-  // Use the real pthread_once to handle initialization.
-  typedef int (*once_fn_t)(pthread_once_t*, void (*)());
-  once_fn_t real_once = (once_fn_t)dlsym(RTLD_NEXT, "pthread_once");
+  hooks::init(hooks::pthread_once, "pthread_once");
 
-  real_once(&init_once, []() {
+  hooks::pthread_once(&init_once, []() {
+    hooks::init(hooks::sleep, "sleep");
+    hooks::init(hooks::usleep, "usleep");
+    hooks::init(hooks::nanosleep, "nanosleep");
+    hooks::init(hooks::sched_yield, "sched_yield");
+    hooks::init(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
+    hooks::init(hooks::pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
+    hooks::init(hooks::pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
+    hooks::init(hooks::pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
+    hooks::init(hooks::pthread_join, "pthread_join");
+    hooks::init(hooks::pthread_mutex_lock, "pthread_mutex_lock");
+    hooks::init(hooks::pthread_mutex_trylock, "pthread_mutex_trylock");
+    hooks::init(hooks::pthread_mutex_unlock, "pthread_mutex_unlock");
+
     const char* path = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
     const char* buffer_size_str = getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536");
     int buffer_size_kb = atoi(buffer_size_str);
@@ -486,69 +556,8 @@ public:
 
 extern "C" {
 
-// In some environments, dlsym itself uses pthreads/sleep, which breaks our hooking mechanism.
-// These same environments have these non-standard-looking functions, so we can skip dlsym.
-// Mark these as weak in case they don't exist everywhere.
-#define WEAK __attribute__((weak))
-WEAK unsigned int __sleep(unsigned int);
-WEAK int __usleep(useconds_t);
-WEAK int __nanosleep(const struct timespec*, struct timespec*);
-WEAK int __sched_yield();
-WEAK int __pthread_cond_broadcast(pthread_cond_t*);
-WEAK int __pthread_cond_signal(pthread_cond_t*);
-WEAK int __pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const struct timespec*);
-WEAK int __pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
-WEAK int __pthread_join(pthread_t, void**);
-WEAK int __pthread_mutex_lock(pthread_mutex_t*);
-WEAK int __pthread_mutex_trylock(pthread_mutex_t*);
-WEAK int __pthread_mutex_unlock(pthread_mutex_t*);
-WEAK int __pthread_once(pthread_once_t*, void (*)());
-
-}  // extern "C"
-
-namespace {
-
-namespace hooks {
-
-unsigned int (*sleep)(unsigned int) = __sleep;
-int (*usleep)(useconds_t) = __usleep;
-int (*nanosleep)(const struct timespec*, struct timespec*) = __nanosleep;
-int (*sched_yield)() = __sched_yield;
-int (*pthread_cond_broadcast)(pthread_cond_t*) = __pthread_cond_broadcast;
-int (*pthread_cond_signal)(pthread_cond_t*) = __pthread_cond_signal;
-int (*pthread_cond_timedwait)(pthread_cond_t*, pthread_mutex_t*, const struct timespec*) = __pthread_cond_timedwait;
-int (*pthread_cond_wait)(pthread_cond_t*, pthread_mutex_t*) = __pthread_cond_wait;
-int (*pthread_join)(pthread_t, void**) = __pthread_join;
-int (*pthread_mutex_lock)(pthread_mutex_t*) = __pthread_mutex_lock;
-int (*pthread_mutex_trylock)(pthread_mutex_t*) = __pthread_mutex_trylock;
-int (*pthread_mutex_unlock)(pthread_mutex_t*) = __pthread_mutex_unlock;
-int (*pthread_once)(pthread_once_t*, void (*)()) = __pthread_once;
-
-template <typename T>
-NOINLINE void init(T& hook, const char* name, const char* version = nullptr) {
-  T result;
-  if (version) {
-    result = (T)dlvsym(RTLD_NEXT, name, version);
-  } else {
-    result = (T)dlsym(RTLD_NEXT, name);
-  }
-  if (!result) {
-    fprintf(stderr, "Failed to find %s\n", name);
-    exit(1);
-  }
-
-  // This might run on more than one thread, this is a benign race.
-  __atomic_store_n(&hook, result, __ATOMIC_RELAXED);
-}
-
-}  // namespace hooks
-
-}  // namespace
-
-extern "C" {
-
 unsigned int sleep(unsigned int secs) {
-  if (!hooks::sleep) hooks::init(hooks::sleep, "sleep");
+  assert(hooks::sleep);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sleep);
@@ -558,7 +567,7 @@ unsigned int sleep(unsigned int secs) {
 }
 
 int usleep(useconds_t usecs) {
-  if (!hooks::usleep) hooks::init(hooks::usleep, "usleep");
+  assert(hooks::usleep);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_usleep);
@@ -568,7 +577,7 @@ int usleep(useconds_t usecs) {
 }
 
 int nanosleep(const struct timespec* duration, struct timespec* rem) {
-  if (!hooks::nanosleep) hooks::init(hooks::nanosleep, "nanosleep");
+  assert(hooks::nanosleep);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_nanosleep);
@@ -578,7 +587,7 @@ int nanosleep(const struct timespec* duration, struct timespec* rem) {
 }
 
 int sched_yield() {
-  if (!hooks::sched_yield) hooks::init(hooks::sched_yield, "sched_yield");
+  assert(hooks::sched_yield);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_yield);
@@ -588,8 +597,7 @@ int sched_yield() {
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond) {
-  if (!hooks::pthread_cond_broadcast)
-    hooks::init(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
+  assert(hooks::pthread_cond_broadcast);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_cond_broadcast);
@@ -599,7 +607,7 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
 }
 
 int pthread_cond_signal(pthread_cond_t* cond) {
-  if (!hooks::pthread_cond_signal) hooks::init(hooks::pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
+  assert(hooks::pthread_cond_signal);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_cond_signal);
@@ -609,8 +617,7 @@ int pthread_cond_signal(pthread_cond_t* cond) {
 }
 
 int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime) {
-  if (!hooks::pthread_cond_timedwait)
-    hooks::init(hooks::pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
+  assert(hooks::pthread_cond_timedwait);
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
@@ -623,7 +630,7 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
 }
 
 int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
-  if (!hooks::pthread_cond_wait) hooks::init(hooks::pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
+  assert(hooks::pthread_cond_wait);
 
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
@@ -636,7 +643,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
 }
 
 int pthread_join(pthread_t thread, void** value_ptr) {
-  if (!hooks::pthread_join) hooks::init(hooks::pthread_join, "pthread_join");
+  assert(hooks::pthread_join);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_join);
@@ -646,7 +653,7 @@ int pthread_join(pthread_t thread, void** value_ptr) {
 }
 
 int pthread_mutex_lock(pthread_mutex_t* mutex) {
-  if (!hooks::pthread_mutex_lock) hooks::init(hooks::pthread_mutex_lock, "pthread_mutex_lock");
+  assert(hooks::pthread_mutex_lock);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_mutex_lock);
@@ -657,7 +664,7 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
 }
 
 int pthread_mutex_trylock(pthread_mutex_t* mutex) {
-  if (!hooks::pthread_mutex_trylock) hooks::init(hooks::pthread_mutex_trylock, "pthread_mutex_trylock");
+  assert(hooks::pthread_mutex_trylock);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_mutex_trylock);
@@ -670,7 +677,7 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
 }
 
 int pthread_mutex_unlock(pthread_mutex_t* mutex) {
-  if (!hooks::pthread_mutex_unlock) hooks::init(hooks::pthread_mutex_unlock, "pthread_mutex_unlock");
+  assert(hooks::pthread_mutex_unlock);
 
   auto& t = track::get_thread();
   t.write_end_mutex_locked(mutex);
@@ -681,7 +688,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
 }
 
 int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
-  if (!hooks::pthread_once) hooks::init(hooks::pthread_once, "pthread_once");
+  assert(hooks::pthread_once);
 
   auto& t = track::get_thread();
   t.write_begin(slice_begin_once);
