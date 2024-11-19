@@ -6,16 +6,21 @@ namespace perfetto {
 // These protobuf messages are for 'perfetto', excerpted from
 // https://cs.android.com/android/platform/superproject/main/+/main:external/perfetto/protos/perfetto/trace/trace_packet.proto
 
-enum class EventName {
+namespace EventName {
+enum {
   /*optional uint64*/ iid = 1,
   /*optional string*/ name = 2,
 };
+}
 
-enum class InternedData {
+namespace InternedData {
+enum {
   /*repeated EventName*/ event_names = 2,
 };
+}
 
-enum class TrackDescriptor {
+namespace TrackDescriptor {
+enum {
   /*optional uint64*/ uuid = 1,
   /*optional uint64*/ parent_uuid = 5,
   // oneof {
@@ -25,22 +30,28 @@ enum class TrackDescriptor {
   /*optional ProcessDescriptor*/ process = 3,
   /*optional ThreadDescriptor*/ thread = 4,
 };
+}
 
-enum class ThreadDescriptor {
+namespace ThreadDescriptor {
+enum {
   /*optional int32*/ pid = 1,
   /*optional int32*/ tid = 2,
   /*optional string*/ thread_name = 5,
 };
+}
 
-enum class EventType {
+namespace EventType {
+enum {
   UNSPECIFIED = 0,
   SLICE_BEGIN = 1,
   SLICE_END = 2,
   INSTANT = 3,
   COUNTER = 4,
 };
+}
 
-enum class TrackEvent {
+namespace TrackEvent {
+enum {
   /*uint64*/ name_iid = 10,
   /*string*/ name = 23,
   /*optional EventType*/ type = 9,
@@ -48,14 +59,18 @@ enum class TrackEvent {
   /*repeated uint64*/ extra_counter_track_uuids = 31,
   /*repeated int64*/ extra_counter_values = 12,
 };
+}
 
-enum class SequenceFlags {
+namespace SequenceFlags {
+enum {
   UNSPECIFIED = 0,
   INCREMENTAL_STATE_CLEARED = 1,
   NEEDS_INCREMENTAL_STATE = 2,
 };
+}
 
-enum class TracePacket {
+namespace TracePacket {
+enum {
   /*ClockSnapshot*/ clock_snapshot = 6,
   /*optional uint64*/ timestamp = 8,
   /*optional uint32*/ timestamp_clock_id = 58,
@@ -66,24 +81,32 @@ enum class TracePacket {
   /*optional InternedData*/ interned_data = 12,
   /*optional uint32*/ sequence_flags = 13,
 };
+}
 
-enum class TrackEventDefaults {
+namespace TrackEventDefaults {
+enum {
   /*optional uint64*/ track_uuid = 11,
 };
+}
 
-enum class TracePacketDefaults {
+namespace TracePacketDefaults {
+enum {
   /*optional uint32*/ timestamp_clock_id = 58,
   /*optional TrackEventDefaults*/ track_event_defaults = 11,
 };
+}
 
 // https://cs.android.com/android/platform/superproject/main/+/main:external/perfetto/protos/perfetto/trace/clock_snapshot.proto
-enum class Clock {
+namespace Clock {
+enum {
   /*optional uint32*/ clock_id = 1,
   /*optional uint64*/ timestamp = 2,
   /*optional bool*/ is_incremental = 3,
 };
+}
 
-enum class BuiltinClocks {
+namespace BuiltinClocks {
+enum {
   UNKNOWN = 0,
   REALTIME = 1,
   REALTIME_COARSE = 2,
@@ -95,14 +118,21 @@ enum class BuiltinClocks {
   THREAD_CPUTIME = 8,
   BUILTIN_CLOCK_MAX_ID = 63,
 };
+}
 
 // A snapshot of clock readings to allow for trace alignment.
-enum class ClockSnapshot {
+namespace ClockSnapshot {
+enum {
   /*repeated Clock*/ clocks = 1,
 };
+}
 
-constexpr uint64_t trace_packet_tag = 1;
-constexpr uint64_t padding_tag = 2;
+namespace Trace {
+enum {
+  /*repeated TracePacket*/ trace_packet_tag = 1,
+  /*repeated Padding*/ padding_tag = 2,  // I made this one up
+};
+}
 
 }  // namespace perfetto
 

@@ -30,8 +30,8 @@ using namespace perfetto;
 namespace {
 
 constexpr proto::buffer<2> sequence_flags_cleared(
-    {{make_tag(static_cast<uint64_t>(TracePacket::sequence_flags), proto::wire_type::varint),
-        static_cast<uint64_t>(SequenceFlags::INCREMENTAL_STATE_CLEARED)}},
+    {{make_tag(TracePacket::sequence_flags, proto::wire_type::varint),
+        SequenceFlags::INCREMENTAL_STATE_CLEARED}},
     /*size=*/2);
 
 // The trace events we support.
@@ -54,18 +54,18 @@ enum class event_type : uint8_t {
   count,
 };
 
-constexpr uint8_t name_iid_tag = make_tag(static_cast<uint64_t>(TrackEvent::name_iid), proto::wire_type::varint);
-constexpr uint8_t track_event_tag = make_tag(static_cast<uint64_t>(TracePacket::track_event), proto::wire_type::len);
-constexpr uint8_t track_event_type_tag = make_tag(static_cast<uint64_t>(TrackEvent::type), proto::wire_type::varint);
+constexpr uint8_t name_iid_tag = make_tag(TrackEvent::name_iid, proto::wire_type::varint);
+constexpr uint8_t track_event_tag = make_tag(TracePacket::track_event, proto::wire_type::len);
+constexpr uint8_t track_event_type_tag = make_tag(TrackEvent::type, proto::wire_type::varint);
 
 constexpr proto::buffer<6> make_slice_begin(event_type event) {
-  return proto::buffer<6>({{track_event_tag, 4, track_event_type_tag, static_cast<uint64_t>(EventType::SLICE_BEGIN),
+  return proto::buffer<6>({{track_event_tag, 4, track_event_type_tag, EventType::SLICE_BEGIN,
                               name_iid_tag, static_cast<uint8_t>(event)}},
       /*size=*/6);
 }
 
 constexpr proto::buffer<4> slice_end(
-    {{track_event_tag, 2, track_event_type_tag, static_cast<uint64_t>(EventType::SLICE_END)}}, /*size=*/4);
+    {{track_event_tag, 2, track_event_type_tag, EventType::SLICE_END}}, /*size=*/4);
 
 constexpr auto slice_begin_cond_broadcast = make_slice_begin(event_type::cond_broadcast);
 constexpr auto slice_begin_cond_signal = make_slice_begin(event_type::cond_signal);
@@ -109,11 +109,11 @@ void write_interned_data(proto::buffer<N>& buf) {
   proto::buffer<N> event_names;
   for (size_t i = 1; i < static_cast<size_t>(event_type::count); ++i) {
     proto::buffer<64> event_name;
-    event_name.write_tagged(static_cast<uint64_t>(EventName::iid), i);
-    event_name.write_tagged(static_cast<uint64_t>(EventName::name), to_string(static_cast<event_type>(i)));
-    event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
+    event_name.write_tagged(EventName::iid, i);
+    event_name.write_tagged(EventName::name, to_string(static_cast<event_type>(i)));
+    event_names.write_tagged(InternedData::event_names, event_name);
   }
-  buf.write_tagged(static_cast<uint64_t>(TracePacket::interned_data), event_names);
+  buf.write_tagged(TracePacket::interned_data, event_names);
 }
 
 constexpr size_t block_size_kb = 32;
@@ -171,7 +171,7 @@ public:
 
     // Initialize all the blocks with padding.
     for (size_t i = 0; i < size_; i += block_size) {
-      proto::write_padding(buffer_ + i, padding_tag, block_size);
+      proto::write_padding(buffer_ + i, Trace::padding_tag, block_size);
     }
   }
 
@@ -195,7 +195,7 @@ static std::atomic<int> next_sequence_id{0};
 
 sequence_id_type new_sequence_id() {
   static constexpr uint8_t tag =
-      make_tag(static_cast<uint64_t>(TracePacket::trusted_packet_sequence_id), proto::wire_type::varint);
+      make_tag(TracePacket::trusted_packet_sequence_id, proto::wire_type::varint);
   uint64_t id = proto::to_varint(++next_sequence_id);
   sequence_id_type result;
   result[0] = tag;
@@ -231,7 +231,7 @@ public:
       value = now;
     }
     timestamp.clear();
-    timestamp.write_tagged(static_cast<uint64_t>(TracePacket::timestamp), value);
+    timestamp.write_tagged(TracePacket::timestamp, value);
   }
 
   template <size_t N>
@@ -241,22 +241,22 @@ public:
     t0 = now_ns();
 
     proto::buffer<32> clock;
-    clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), clock_id);
-    clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), static_cast<uint64_t>(0));
-    clock.write_tagged(static_cast<uint64_t>(Clock::is_incremental), true);
+    clock.write_tagged(Clock::clock_id, clock_id);
+    clock.write_tagged(Clock::timestamp, static_cast<uint64_t>(0));
+    clock.write_tagged(Clock::is_incremental, true);
 
     proto::buffer<32> boottime_clock;
-    boottime_clock.write_tagged(static_cast<uint64_t>(Clock::clock_id), static_cast<uint64_t>(BuiltinClocks::BOOTTIME));
-    boottime_clock.write_tagged(static_cast<uint64_t>(Clock::timestamp), t0);
+    boottime_clock.write_tagged(Clock::clock_id, static_cast<uint64_t>(BuiltinClocks::BOOTTIME));
+    boottime_clock.write_tagged(Clock::timestamp, t0);
 
     proto::buffer<64> clocks;
-    clocks.write_tagged(static_cast<uint64_t>(ClockSnapshot::clocks), clock);
-    clocks.write_tagged(static_cast<uint64_t>(ClockSnapshot::clocks), boottime_clock);
+    clocks.write_tagged(ClockSnapshot::clocks, clock);
+    clocks.write_tagged(ClockSnapshot::clocks, boottime_clock);
 
     proto::buffer<64> clock_snapshot;
-    clock_snapshot.write_tagged(static_cast<uint64_t>(TracePacket::clock_snapshot), clocks);
+    clock_snapshot.write_tagged(TracePacket::clock_snapshot, clocks);
 
-    buffer.write_tagged(trace_packet_tag, clock_snapshot, sequence_id);
+    buffer.write_tagged(Trace::trace_packet_tag, clock_snapshot, sequence_id);
   }
 };
 
@@ -288,31 +288,31 @@ class track {
       uint64_t id, const char* name_str, const proto::buffer<512>& interned_data, const sequence_id_type& sequence_id) {
     // Write the thread descriptor once.
     proto::buffer<12> uuid;
-    uuid.write_tagged(static_cast<uint64_t>(TrackDescriptor::uuid), id);
+    uuid.write_tagged(TrackDescriptor::uuid, id);
 
     proto::buffer<256> name;
-    name.write_tagged(static_cast<uint64_t>(TrackDescriptor::name), name_str);
+    name.write_tagged(TrackDescriptor::name, name_str);
 
     proto::buffer<256> track_descriptor;
-    track_descriptor.write_tagged(static_cast<uint64_t>(TracePacket::track_descriptor), uuid, name);
+    track_descriptor.write_tagged(TracePacket::track_descriptor, uuid, name);
 
     proto::buffer<8> timestamp_clock_id;
     if (clock_id) {
-      timestamp_clock_id.write_tagged(static_cast<uint64_t>(TracePacketDefaults::timestamp_clock_id), clock_id);
+      timestamp_clock_id.write_tagged(TracePacketDefaults::timestamp_clock_id, clock_id);
     }
 
     proto::buffer<12> track_uuid;
-    track_uuid.write_tagged(static_cast<uint64_t>(TrackEventDefaults::track_uuid), id);
+    track_uuid.write_tagged(TrackEventDefaults::track_uuid, id);
 
     proto::buffer<16> track_event_defaults;
-    track_event_defaults.write_tagged(static_cast<uint64_t>(TracePacketDefaults::track_event_defaults), track_uuid);
+    track_event_defaults.write_tagged(TracePacketDefaults::track_event_defaults, track_uuid);
 
     proto::buffer<32> trace_packet_defaults;
     trace_packet_defaults.write_tagged(
-        static_cast<uint64_t>(TracePacket::trace_packet_defaults), timestamp_clock_id, track_event_defaults);
+        TracePacket::trace_packet_defaults, timestamp_clock_id, track_event_defaults);
 
     buffer.write_tagged(
-        trace_packet_tag, track_descriptor, trace_packet_defaults, interned_data, sequence_id, sequence_flags_cleared);
+        Trace::trace_packet_tag, track_descriptor, trace_packet_defaults, interned_data, sequence_id, sequence_flags_cleared);
   }
 
   void write_track_descriptor() {
@@ -335,13 +335,13 @@ class track {
 
     proto::buffer<32> event_name;
     event_name.write_tagged(static_cast<uint64_t>(EventName::iid), static_cast<uint64_t>(event_type::mutex_locked));
-    event_name.write_tagged(static_cast<uint64_t>(EventName::name), static_cast<const char*>(mutex_locked_str));
+    event_name.write_tagged(EventName::name, static_cast<const char*>(mutex_locked_str));
 
     proto::buffer<32> event_names;
-    event_names.write_tagged(static_cast<uint64_t>(InternedData::event_names), event_name);
+    event_names.write_tagged(InternedData::event_names, event_name);
 
     proto::buffer<512> interned_data;
-    interned_data.write_tagged(static_cast<uint64_t>(TracePacket::interned_data), event_names);
+    interned_data.write_tagged(TracePacket::interned_data, event_names);
 
     char track_name[32];
     snprintf(track_name, sizeof(track_name), "mutex %p", mutex);
@@ -376,7 +376,7 @@ class track {
   }
 
   NOINLINE void flush() {
-    buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
+    buffer.write_tagged_padding(Trace::padding_tag, block_size - buffer.size());
     assert(buffer.size() == block_size);
     file->write_block(buffer.data());
     buffer.clear();
@@ -395,7 +395,7 @@ public:
 
   NOINLINE ~track() {
     if (buffer.size() > 0) {
-      buffer.write_tagged_padding(padding_tag, block_size - buffer.size());
+      buffer.write_tagged_padding(Trace::padding_tag, block_size - buffer.size());
       assert(buffer.size() == block_size);
       file->write_block(buffer.data());
     }
@@ -409,7 +409,7 @@ public:
 
     timestamp_type timestamp;
     clock.update_timestamp(timestamp);
-    buffer.write_tagged(trace_packet_tag, sequence_id, track_event, timestamp);
+    buffer.write_tagged(Trace::trace_packet_tag, sequence_id, track_event, timestamp);
   }
 
   NOINLINE void write_end() {
@@ -418,7 +418,7 @@ public:
 
     timestamp_type timestamp;
     clock.update_timestamp(timestamp);
-    buffer.write_tagged(trace_packet_tag, sequence_id, slice_end, timestamp);
+    buffer.write_tagged(Trace::trace_packet_tag, sequence_id, slice_end, timestamp);
   }
 
   // Write a (mutex %p locked) event. These always have the same timestamp as the previous event.
@@ -430,7 +430,7 @@ public:
 
     timestamp_type timestamp;
     track.clock.update_timestamp(timestamp);
-    buffer.write_tagged(trace_packet_tag, track.sequence_id, slice_begin_mutex_locked, timestamp);
+    buffer.write_tagged(Trace::trace_packet_tag, track.sequence_id, slice_begin_mutex_locked, timestamp);
   }
 
   NOINLINE void write_end_mutex_locked(const void* mutex) {
@@ -441,7 +441,7 @@ public:
 
     timestamp_type timestamp;
     track.clock.update_timestamp(timestamp);
-    buffer.write_tagged(trace_packet_tag, track.sequence_id, slice_end, timestamp);
+    buffer.write_tagged(Trace::trace_packet_tag, track.sequence_id, slice_end, timestamp);
   }
 
   static track& get_thread() {
