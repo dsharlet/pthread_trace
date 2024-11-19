@@ -421,7 +421,6 @@ public:
     buffer.write_tagged(Trace::trace_packet_tag, sequence_id, slice_end, timestamp);
   }
 
-  // Write a (mutex %p locked) event. These always have the same timestamp as the previous event.
   NOINLINE void write_begin_mutex_locked(const void* mutex) {
     constexpr size_t message_capacity = 32;
     flush(message_capacity);
