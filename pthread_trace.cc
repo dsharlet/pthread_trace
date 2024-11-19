@@ -47,6 +47,7 @@ WEAK int __pthread_mutex_lock(pthread_mutex_t*);
 WEAK int __pthread_mutex_trylock(pthread_mutex_t*);
 WEAK int __pthread_mutex_unlock(pthread_mutex_t*);
 WEAK int __pthread_once(pthread_once_t*, void (*)());
+WEAK int __pthread_barrier_wait(pthread_barrier_t*);
 
 struct sem_t;
 WEAK int __sem_wait(sem_t*);
@@ -74,13 +75,14 @@ int (*pthread_mutex_lock)(pthread_mutex_t*) = __pthread_mutex_lock;
 int (*pthread_mutex_trylock)(pthread_mutex_t*) = __pthread_mutex_trylock;
 int (*pthread_mutex_unlock)(pthread_mutex_t*) = __pthread_mutex_unlock;
 int (*pthread_once)(pthread_once_t*, void (*)()) = __pthread_once;
+int (*pthread_barrier_wait)(pthread_barrier_t*) = __pthread_barrier_wait;
 
 int (*sem_wait)(sem_t*) = __sem_wait;
 int (*sem_timedwait)(sem_t*, const struct timespec*) = __sem_timedwait;
 int (*sem_trywait)(sem_t*) = __sem_trywait;
 int (*sem_post)(sem_t*) = __sem_post;
 
-template <typename T>
+template <bool Required, typename T>
 NOINLINE void init(T& hook, const char* name, const char* version = nullptr) {
   if (hook) return;
 
@@ -91,8 +93,12 @@ NOINLINE void init(T& hook, const char* name, const char* version = nullptr) {
     result = (T)dlsym(RTLD_NEXT, name);
   }
   if (!result) {
-    fprintf(stderr, "Failed to find %s\n", name);
-    exit(1);
+    if (Required) {
+      fprintf(stderr, "Failed to find %s\n", name);
+      exit(1);
+    } else {
+      return;
+    }
   }
 
   // This might run on more than one thread, this is a benign race.
@@ -123,6 +129,7 @@ enum class event_type : uint8_t {
   mutex_trylock,
   mutex_unlock,
   once,
+  barrier_wait,
 
   sem_wait,
   sem_timedwait,
@@ -161,6 +168,7 @@ constexpr auto slice_begin_mutex_trylock = make_slice_begin(event_type::mutex_tr
 constexpr auto slice_begin_mutex_unlock = make_slice_begin(event_type::mutex_unlock);
 constexpr auto slice_begin_mutex_locked = make_slice_begin(event_type::mutex_locked);
 constexpr auto slice_begin_once = make_slice_begin(event_type::once);
+constexpr auto slice_begin_barrier_wait = make_slice_begin(event_type::barrier_wait);
 
 constexpr auto slice_begin_sem_wait = make_slice_begin(event_type::sem_wait);
 constexpr auto slice_begin_sem_timedwait = make_slice_begin(event_type::sem_timedwait);
@@ -183,6 +191,7 @@ const char* to_interned_string(event_type t) {
   case event_type::mutex_trylock: return "pthread_mutex_trylock";
   case event_type::mutex_unlock: return "pthread_mutex_unlock";
   case event_type::once: return "pthread_once";
+  case event_type::barrier_wait: return "pthread_barrier_wait";
 
   case event_type::sem_wait: return "sem_wait";
   case event_type::sem_timedwait: return "sem_timedwait";
@@ -292,27 +301,28 @@ const char* getenv_or(const char* env, const char* def) {
 pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
 NOINLINE void init_trace() {
-  hooks::init(hooks::pthread_once, "pthread_once");
+  hooks::init<true>(hooks::pthread_once, "pthread_once");
 
   hooks::pthread_once(&init_once, []() {
-    hooks::init(hooks::sleep, "sleep");
-    hooks::init(hooks::usleep, "usleep");
-    hooks::init(hooks::nanosleep, "nanosleep");
-    hooks::init(hooks::sched_yield, "sched_yield");
+    hooks::init<true>(hooks::sleep, "sleep");
+    hooks::init<true>(hooks::usleep, "usleep");
+    hooks::init<true>(hooks::nanosleep, "nanosleep");
+    hooks::init<true>(hooks::sched_yield, "sched_yield");
 
-    hooks::init(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
-    hooks::init(hooks::pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
-    hooks::init(hooks::pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
-    hooks::init(hooks::pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
-    hooks::init(hooks::pthread_join, "pthread_join");
-    hooks::init(hooks::pthread_mutex_lock, "pthread_mutex_lock");
-    hooks::init(hooks::pthread_mutex_trylock, "pthread_mutex_trylock");
-    hooks::init(hooks::pthread_mutex_unlock, "pthread_mutex_unlock");
+    hooks::init<true>(hooks::pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
+    hooks::init<true>(hooks::pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
+    hooks::init<true>(hooks::pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
+    hooks::init<true>(hooks::pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
+    hooks::init<true>(hooks::pthread_join, "pthread_join");
+    hooks::init<true>(hooks::pthread_mutex_lock, "pthread_mutex_lock");
+    hooks::init<true>(hooks::pthread_mutex_trylock, "pthread_mutex_trylock");
+    hooks::init<true>(hooks::pthread_mutex_unlock, "pthread_mutex_unlock");
+    hooks::init<false>(hooks::pthread_barrier_wait, "pthread_barrier_wait");
 
-    hooks::init(hooks::sem_wait, "sem_wait");
-    hooks::init(hooks::sem_timedwait, "sem_timedwait");
-    hooks::init(hooks::sem_trywait, "sem_trywait");
-    hooks::init(hooks::sem_post, "sem_post");
+    hooks::init<true>(hooks::sem_wait, "sem_wait");
+    hooks::init<true>(hooks::sem_timedwait, "sem_timedwait");
+    hooks::init<true>(hooks::sem_trywait, "sem_trywait");
+    hooks::init<true>(hooks::sem_post, "sem_post");
 
     const char* path = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
     const char* buffer_size_str = getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536");
@@ -734,6 +744,16 @@ int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
   t.write_begin(slice_begin_once);
   int result = hooks::pthread_once(once_control, init_routine);
   t.write_end();  // slice_begin_once
+  return result;
+}
+
+int pthread_barrier_wait(pthread_barrier_t* barrier) {
+  assert(hooks::pthread_barrier_wait);
+
+  auto& t = track::get_thread();
+  t.write_begin(slice_begin_barrier_wait);
+  int result = hooks::pthread_barrier_wait(barrier);
+  t.write_end();
   return result;
 }
 
