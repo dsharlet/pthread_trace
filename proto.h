@@ -89,14 +89,17 @@ class buffer;
 
 namespace internal {
 
+template <typename T>
+struct capacity_of {};
+
 template <size_t N>
-constexpr size_t capacity_of(const buffer<N>&) {
-  return N;
-}
+struct capacity_of<buffer<N>> {
+  static constexpr size_t value = N;
+};
 template <typename T, size_t N>
-constexpr size_t capacity_of(const std::array<T, N>&) {
-  return N;
-}
+struct capacity_of<std::array<T, N>> {
+  static constexpr size_t value = N;
+};
 
 }  // namespace internal
 
@@ -209,8 +212,7 @@ public:
   void write_tagged(uint64_t tag, const Fields&... fields) {
     write_tag(tag, wire_type::len);
     // This branch avoids varint encoding for most use cases.
-    // TODO: Try to make this constexpr.
-    size_t capacity = internal::sum(internal::capacity_of(fields)...);
+    constexpr size_t capacity = internal::sum(internal::capacity_of<Fields>::value...);
     size_t size = internal::sum(fields.size()...);
     assert(size <= capacity);
     if (capacity < 0x80) {
