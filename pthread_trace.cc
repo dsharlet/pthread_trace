@@ -482,21 +482,47 @@ public:
   }
 };
 
+}  // namespace
+
+extern "C" {
+
+// In some environments, dlsym itself uses pthreads/sleep, which breaks our hooking mechanism.
+// These same environments have these non-standard-looking functions, so we can skip dlsym.
+// Mark these as weak in case they don't exist everywhere.
+#define WEAK __attribute__((weak))
+WEAK unsigned int __sleep(unsigned int);
+WEAK int __usleep(useconds_t);
+WEAK int __nanosleep(const struct timespec*, struct timespec*);
+WEAK int __sched_yield();
+WEAK int __pthread_cond_broadcast(pthread_cond_t*);
+WEAK int __pthread_cond_signal(pthread_cond_t*);
+WEAK int __pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const struct timespec*);
+WEAK int __pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
+WEAK int __pthread_join(pthread_t, void**);
+WEAK int __pthread_mutex_lock(pthread_mutex_t*);
+WEAK int __pthread_mutex_trylock(pthread_mutex_t*);
+WEAK int __pthread_mutex_unlock(pthread_mutex_t*);
+WEAK int __pthread_once(pthread_once_t*, void (*)());
+
+}  // extern "C"
+
+namespace {
+
 namespace hooks {
 
-unsigned int (*sleep)(unsigned int) = nullptr;
-int (*usleep)(useconds_t) = nullptr;
-int (*nanosleep)(const struct timespec*, struct timespec*) = nullptr;
-int (*sched_yield)() = nullptr;
-int (*pthread_cond_broadcast)(pthread_cond_t*) = nullptr;
-int (*pthread_cond_signal)(pthread_cond_t*) = nullptr;
-int (*pthread_cond_timedwait)(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime) = nullptr;
-int (*pthread_cond_wait)(pthread_cond_t* cond, pthread_mutex_t* mutex) = nullptr;
-int (*pthread_join)(pthread_t thread, void** value_ptr) = nullptr;
-int (*pthread_mutex_lock)(pthread_mutex_t*) = nullptr;
-int (*pthread_mutex_trylock)(pthread_mutex_t*) = nullptr;
-int (*pthread_mutex_unlock)(pthread_mutex_t*) = nullptr;
-int (*pthread_once)(pthread_once_t* once_control, void (*init_routine)()) = nullptr;
+unsigned int (*sleep)(unsigned int) = __sleep;
+int (*usleep)(useconds_t) = __usleep;
+int (*nanosleep)(const struct timespec*, struct timespec*) = __nanosleep;
+int (*sched_yield)() = __sched_yield;
+int (*pthread_cond_broadcast)(pthread_cond_t*) = __pthread_cond_broadcast;
+int (*pthread_cond_signal)(pthread_cond_t*) = __pthread_cond_signal;
+int (*pthread_cond_timedwait)(pthread_cond_t*, pthread_mutex_t*, const struct timespec*) = __pthread_cond_timedwait;
+int (*pthread_cond_wait)(pthread_cond_t*, pthread_mutex_t*) = __pthread_cond_wait;
+int (*pthread_join)(pthread_t, void**) = __pthread_join;
+int (*pthread_mutex_lock)(pthread_mutex_t*) = __pthread_mutex_lock;
+int (*pthread_mutex_trylock)(pthread_mutex_t*) = __pthread_mutex_trylock;
+int (*pthread_mutex_unlock)(pthread_mutex_t*) = __pthread_mutex_unlock;
+int (*pthread_once)(pthread_once_t*, void (*)()) = __pthread_once;
 
 template <typename T>
 NOINLINE void init(T& hook, const char* name, const char* version = nullptr) {
