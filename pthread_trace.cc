@@ -210,7 +210,10 @@ sequence_id_type new_sequence_id() {
 // Set this to 0 to disable incremental timestamps (for debugging).
 constexpr uint64_t clock_id = 64;
 
-using timestamp_type = proto::buffer<12>;
+using timestamp_type = std::array<uint8_t, 8>;
+
+// We can't store a full 64 bit varint in our timestamp_type.
+constexpr uint64_t timestamp_max = (1ull << ((sizeof(timestamp_type) - 1) * 7)) - 1;
 
 class incremental_clock {
   uint64_t t0;
@@ -232,8 +235,18 @@ public:
     } else {
       value = now;
     }
-    timestamp.clear();
-    timestamp.write_tagged(TracePacket::timestamp, value);
+    assert(value <= timestamp_max);
+    memset(&timestamp[0], 0, sizeof(timestamp));
+    timestamp[0] = make_tag(TracePacket::timestamp, proto::wire_type::varint);
+    timestamp[1] = static_cast<uint8_t>(value) | proto::varint_continuation;
+    if (value >= (1ull << 7)) {
+      timestamp[2] = static_cast<uint8_t>(value >> 7) | proto::varint_continuation;
+      timestamp[3] = static_cast<uint8_t>(value >> 14) | proto::varint_continuation;
+      timestamp[4] = static_cast<uint8_t>(value >> 21) | proto::varint_continuation;
+      timestamp[5] = static_cast<uint8_t>(value >> 28) | proto::varint_continuation;
+      timestamp[6] = static_cast<uint8_t>(value >> 35) | proto::varint_continuation;
+      timestamp[7] = static_cast<uint8_t>(value >> 42);
+    }
   }
 
   template <size_t N>
