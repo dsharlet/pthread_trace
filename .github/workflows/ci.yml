@@ -22,5 +22,8 @@ jobs:
       - name: Build and test
         run: bazel test --test_output=errors ...
 
+      - name: Test standalone build
+        run: c++ -shared -fPIC -ldl -O2 -DNDEBUG -std=c++14 pthread_trace.cc -o pthread_trace.so
+
       - name: Shut down bazel
         run: bazel shutdown
