@@ -407,6 +407,7 @@ public:
 static std::atomic<int> next_track_id{0};
 
 class track {
+  circular_file* global_buffer;
   int id;
   std::array<uint8_t, 4> sequence_id;
 
@@ -523,10 +524,10 @@ class track {
   }
 
   void write_block() {
-    if (!file || buffer.empty()) return;
+    if (!global_buffer || buffer.empty()) return;
     buffer.write_tagged_padding(Trace::padding_tag, block_size - buffer.size());
     assert(buffer.size() == block_size);
-    file->write_block(buffer.data());
+    global_buffer->write_block(buffer.data());
   }
 
   NOINLINE void flush() {
@@ -542,8 +543,12 @@ class track {
   }
 
 public:
-  NOINLINE track() : id(next_track_id++) {
+  NOINLINE track() : global_buffer(nullptr), id(next_track_id++) {
+    thread_local bool initializing = false;
+    if (initializing) return;
+    initializing = true;
     init_trace();
+    global_buffer = file.get();
     begin_block(/*first=*/true);
   }
 
