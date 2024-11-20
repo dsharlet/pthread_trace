@@ -527,6 +527,7 @@ class track {
   }
 
   NOINLINE void begin_block(bool first = false) {
+    buffer.clear();
     if (first || clock_id) {
       sequence_id = new_sequence_id();
     }
@@ -545,7 +546,6 @@ class track {
 
   NOINLINE void flush() {
     write_block();
-    buffer.clear();
     begin_block();
   }
 
