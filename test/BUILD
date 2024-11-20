@@ -41,15 +41,15 @@ cc_test(
     size = "small",
 )
 
-cc_test(
+# Also test tracing via linking with `pthread_trace` as a library. This is not a `cc_test` to avoid
+# problems with writing to the default `pthread_trace.proto` path.
+cc_binary(
     name = "traced_thread_benchmark",
     srcs = ["thread_benchmark.cc"],
     deps = [
         "//:pthread_trace",
         "@google_benchmark//:benchmark_main",
     ],
-    args = ["--benchmark_min_time=1x"],
-    size = "small",
 )
 
 sh_test(
