@@ -547,17 +547,32 @@ class track {
     }
   }
 
-public:
-  NOINLINE track() : global_buffer(nullptr), id(next_track_id++) {
-    thread_local bool initializing = false;
-    if (initializing) return;
-    initializing = true;
+  void construct() {}
+
+  // We need a dummy track to return when hooks are recursively called that eats events.
+  static track dummy;
+  track(std::false_type) : global_buffer(nullptr) {}
+
+  track() : global_buffer(nullptr), id(next_track_id++) {
     init_trace();
     global_buffer = &*file;
     begin_block(/*first=*/true);
   }
 
-  NOINLINE ~track() { write_block(); }
+  NOINLINE ~track() noexcept { write_block(); }
+
+public:
+  static track& get_thread() {
+    // We've eliminated all uses of malloc or other things that might recursively call functions we hook. However, the
+    // thread_local destructor mechanism uses malloc, defeating the purpose of all those efforts :( To avoid recursive
+    // calls, we need to detect recursive calls and only attempt to initialize the thread_local on the first call.
+    thread_local bool recursive = false;
+    if (recursive) return dummy;
+    recursive = true;
+    thread_local track t;
+    recursive = false;
+    return t;
+  }
 
   // This is inline so we can see constexpr track_events.
   template <typename TrackEvent>
@@ -600,12 +615,9 @@ public:
     track.clock.update_timestamp(timestamp);
     buffer.write_tagged(Trace::trace_packet_tag, track.sequence_id, slice_end, timestamp);
   }
-
-  static track& get_thread() {
-    thread_local track t;
-    return t;
-  }
 };
+
+track track::dummy{std::false_type()};
 
 }  // namespace
 
