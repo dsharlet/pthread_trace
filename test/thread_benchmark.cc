@@ -34,7 +34,9 @@ void BM_thread_pool(benchmark::State& state) {
   for (auto _ : state) {
     cv.notify_all();
   }
+  m.lock();
   run = false;
+  m.unlock();
   cv.notify_all();
   for (auto& i : threads) {
     i.join();
