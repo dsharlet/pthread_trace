@@ -298,12 +298,16 @@ const char* getenv_or(const char* env, const char* def) {
   return s ? s : def;
 }
 
-pthread_once_t init_once = PTHREAD_ONCE_INIT;
+std::atomic<bool> initializing{false};
+std::atomic<bool> initialized{false};
 
 NOINLINE void init_trace() {
-  hooks::init<true>(hooks::pthread_once, "pthread_once");
+  // It seems like we could initialize the pthread_once hook, and use it here. However,
+  // some pthread_once implementations use pthread_mutex internally (ask me how I know),
+  // so we can't use that. We're just going to implement a call_once with spinning :(
 
-  hooks::pthread_once(&init_once, []() {
+  bool not_initializing = false;
+  if (initializing.compare_exchange_strong(not_initializing, true)) {
     hooks::init<true>(hooks::sleep, "sleep");
     hooks::init<true>(hooks::usleep, "usleep");
     hooks::init<true>(hooks::nanosleep, "nanosleep");
@@ -317,6 +321,7 @@ NOINLINE void init_trace() {
     hooks::init<true>(hooks::pthread_mutex_lock, "pthread_mutex_lock");
     hooks::init<true>(hooks::pthread_mutex_trylock, "pthread_mutex_trylock");
     hooks::init<true>(hooks::pthread_mutex_unlock, "pthread_mutex_unlock");
+    hooks::init<true>(hooks::pthread_once, "pthread_once");
     hooks::init<false>(hooks::pthread_barrier_wait, "pthread_barrier_wait");
 
     hooks::init<true>(hooks::sem_wait, "sem_wait");
@@ -338,7 +343,13 @@ NOINLINE void init_trace() {
 
     interned_data = std::make_unique<proto::buffer<512>>();
     write_interned_data(*interned_data);
-  });
+
+    initialized = true;
+  } else {
+    while (!initialized.load()) {
+      // Don't use anything that might recursively call init_trace.
+    }
+  }
 }
 
 // Sequence IDs are fixed size 3 byte varints.
@@ -525,10 +536,15 @@ class track {
     memset(mutex_tracks.data(), 0, sizeof(mutex_tracks));
   }
 
-  NOINLINE void flush() {
+  void write_block() {
+    if (!file || buffer.empty()) return;
     buffer.write_tagged_padding(Trace::padding_tag, block_size - buffer.size());
     assert(buffer.size() == block_size);
     file->write_block(buffer.data());
+  }
+
+  NOINLINE void flush() {
+    write_block();
     buffer.clear();
     begin_block();
   }
@@ -547,11 +563,7 @@ public:
   }
 
   NOINLINE ~track() {
-    if (buffer.size() > 0) {
-      buffer.write_tagged_padding(Trace::padding_tag, block_size - buffer.size());
-      assert(buffer.size() == block_size);
-      file->write_block(buffer.data());
-    }
+    write_block();
   }
 
   // This is inline so we can see constexpr track_events.
