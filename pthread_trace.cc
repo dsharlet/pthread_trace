@@ -504,9 +504,13 @@ class track {
     proto::buffer<512> interned_data;
     interned_data.write_tagged(TracePacket::interned_data, event_names);
 
+    // Make a track id that is a "hash" of the mutex and the type. Collisions are relatively common when mutexes are
+    // allocated on the stack.
+    const uint64_t track_id = reinterpret_cast<uintptr_t>(mutex) ^ reinterpret_cast<uintptr_t>(type);
+
     char track_name[32];
     snprintf(track_name, sizeof(track_name), "%s %p", type, mutex);
-    write_track_descriptor(reinterpret_cast<uint64_t>(mutex), track_name, interned_data, track.sequence_id);
+    write_track_descriptor(track_id, track_name, interned_data, track.sequence_id);
     track.clock.write_clock_snapshot(buffer, track.sequence_id);
   }
 
@@ -520,8 +524,8 @@ class track {
       }
     }
     // Flush the current block and try again.
-    fprintf(stderr, "pthread_trace: No track for %s %p, prematurely flushing block with %zu of %zu bytes used\n",
-        type, mutex, buffer.size(), buffer.capacity());
+    fprintf(stderr, "pthread_trace: No track for %s %p, prematurely flushing block with %zu of %zu bytes used\n", type,
+        mutex, buffer.size(), buffer.capacity());
     flush();
     return get_mutex_track(type, mutex);
   }
