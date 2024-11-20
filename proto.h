@@ -2,6 +2,7 @@
 #define PTHREAD_TRACE_PROTO_H
 
 #include <array>
+#include <initializer_list>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>

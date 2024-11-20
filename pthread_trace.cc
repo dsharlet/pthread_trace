@@ -1,7 +1,3 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -11,14 +7,17 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <optional>
-#include <thread>
+#include <type_traits>
+#include <utility>
 
 #include "perfetto.h"
 #include "proto.h"
@@ -714,8 +713,7 @@ int pthread_join(pthread_t thread, void** value_ptr) {
 int pthread_mutex_lock(pthread_mutex_t* mutex) {
   auto& t = track::get_thread();
   t.write_begin(slice_begin_mutex_lock);
-  if (!hooks::pthread_mutex_lock)
-    hooks::init(hooks::pthread_mutex_lock, __pthread_mutex_lock, "pthread_mutex_lock");
+  if (!hooks::pthread_mutex_lock) hooks::init(hooks::pthread_mutex_lock, __pthread_mutex_lock, "pthread_mutex_lock");
   int result = hooks::pthread_mutex_lock(mutex);
   t.write_end();
   t.write_begin_mutex_locked("mutex", mutex);

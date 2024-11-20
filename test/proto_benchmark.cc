@@ -1,5 +1,8 @@
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <random>
 
 #include "proto.h"

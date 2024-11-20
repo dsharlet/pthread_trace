@@ -1,9 +1,12 @@
 #include <benchmark/benchmark.h>
 
+#include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <semaphore.h>
 #include <thread>
+#include <vector>
 
 void BM_uncontended_mutex(benchmark::State& state) {
   std::mutex m;

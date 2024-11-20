@@ -1,8 +1,10 @@
 #include "proto.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <vector>
 
 int main(int argc, char** argv) {
