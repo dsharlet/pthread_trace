@@ -235,7 +235,8 @@ class circular_file {
       size_t blocks = next_.load();
       if (blocks < blocks_) {
         // Remove blocks we didn't write anything to.
-        int result = ftruncate(fd, size());
+        int result = ftruncate(fd, blocks * block_size);
+        blocks_ = blocks;
         (void)result;
       }
       ::close(fd);
