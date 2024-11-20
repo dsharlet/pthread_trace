@@ -562,9 +562,7 @@ public:
     begin_block(/*first=*/true);
   }
 
-  NOINLINE ~track() {
-    write_block();
-  }
+  NOINLINE ~track() { write_block(); }
 
   // This is inline so we can see constexpr track_events.
   template <typename TrackEvent>
@@ -816,6 +814,5 @@ int sem_post(sem_t* sem) {
   t.write_end();
   return result;
 }
-
 
 }  // extern "C"
