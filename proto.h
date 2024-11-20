@@ -9,6 +9,8 @@
 
 namespace proto {
 
+namespace {
+
 namespace internal {
 
 constexpr size_t sum() { return 0; }
@@ -223,6 +225,8 @@ public:
     write_all(fields...);
   }
 };
+
+}  // namespace
 
 }  // namespace proto
 

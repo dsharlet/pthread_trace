@@ -18,7 +18,7 @@ uint64_t decode_varint(const std::vector<uint8_t>& bytes) {
   return result;
 }
 
-TEST(to_varint, basic) {
+TEST(proto, to_varint) {
   for (uint64_t i = 0; i <= 0x7f; ++i) {
     ASSERT_EQ(to_varint(i), i);
   }
@@ -41,7 +41,7 @@ std::vector<uint8_t> write_varint(uint64_t x) {
   return result;
 }
 
-TEST(write_varint, basic) {
+TEST(proto, write_varint) {
   for (uint64_t i = 0; i <= 0x7f; ++i) {
     ASSERT_THAT(write_varint(i), testing::ElementsAre(i));
   }
@@ -58,6 +58,13 @@ TEST(write_varint, basic) {
 
   write_varint(varint, std::numeric_limits<uint64_t>::max());
   ASSERT_EQ(decode_varint(varint), std::numeric_limits<uint64_t>::max());
+}
+
+TEST(proto, write_padding) {
+  std::array<uint8_t, 32> buffer;
+  for (uint64_t i = 2; i <= 0x7f; ++i) {
+    ASSERT_EQ(write_padding(buffer.data(), 0, i), i);
+  }
 }
 
 }  // namespace proto
