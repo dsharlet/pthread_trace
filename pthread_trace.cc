@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <optional>
 #include <thread>
 
 #include "perfetto.h"
@@ -225,28 +226,27 @@ constexpr size_t block_size = block_size_kb * 1024;
 class circular_file {
   int fd = 0;
   uint8_t* buffer_ = 0;
-  size_t size_ = 0;
   size_t blocks_ = 0;
 
   std::atomic<size_t> next_{0};
 
   void close() {
     if (buffer_) {
-      munmap(buffer_, size_);
+      munmap(buffer_, size());
       buffer_ = nullptr;
     }
     if (fd >= 0) {
-      size_t size = next_.load();
-      if (size < size_) {
+      size_t blocks = next_.load();
+      if (blocks < blocks_) {
         // Remove blocks we didn't write anything to.
-        int result = ftruncate(fd, size);
+        int result = ftruncate(fd, size());
         (void)result;
-        size_ = size;
       }
       ::close(fd);
       fd = -1;
 
-      fprintf(stderr, "pthread_trace: Recorded %zu KB trace, saved most recent %zu KB\n", size / 1024, size_ / 1024);
+      fprintf(stderr, "pthread_trace: Recorded %zu KB trace, saved most recent %zu KB\n", blocks * block_size_kb,
+          blocks_ * block_size_kb);
     }
   }
 
@@ -260,15 +260,14 @@ public:
     }
 
     blocks_ = blocks;
-    size_ = block_size * blocks;
-    int result = ftruncate(fd, size_);
+    int result = ftruncate(fd, size());
     if (result < 0) {
       close();
       fprintf(stderr, "pthread_trace: Error allocating space in file '%s': %s\n", path, strerror(errno));
       exit(1);
     }
 
-    buffer_ = static_cast<uint8_t*>(mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    buffer_ = static_cast<uint8_t*>(mmap(nullptr, size(), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
     if (buffer_ == (void*)-1) {
       close();
       fprintf(stderr, "pthread_trace: Error mapping file '%s': %s\n", path, strerror(errno));
@@ -277,23 +276,29 @@ public:
     next_ = 0;
 
     // Initialize all the blocks with padding.
-    for (size_t i = 0; i < size_; i += block_size) {
+    for (size_t i = 0; i < size(); i += block_size) {
       proto::write_padding(buffer_ + i, Trace::padding_tag, block_size);
     }
+  }
+  circular_file(circular_file&& other) {
+    std::swap(fd, other.fd);
+    std::swap(buffer_, other.buffer_);
+    std::swap(blocks_, other.blocks_);
   }
 
   ~circular_file() { close(); }
 
+  size_t size() const { return blocks_ * block_size; }
+
   void write_block(const uint8_t* data) {
-    size_t offset = next_.fetch_add(block_size) % size_;
+    size_t offset = (next_.fetch_add(1) % blocks_) * block_size;
     memcpy(buffer_ + offset, data, block_size);
   }
 };
 
-// Don't use globals with non-constant initialization, because global constructors might run after the first thread
-// starts tracing.
-std::unique_ptr<circular_file> file;
-std::unique_ptr<proto::buffer<512>> interned_data;
+// We cannot use global constructors due to undefined global constructor order.
+std::optional<circular_file> file = std::nullopt;
+std::optional<proto::buffer<512>> interned_data = std::nullopt;
 
 const char* getenv_or(const char* env, const char* def) {
   const char* s = getenv(env);
@@ -319,10 +324,10 @@ NOINLINE void init_trace() {
       exit(1);
     }
 
-    file = std::make_unique<circular_file>(path, blocks);
+    file.emplace(path, blocks);
     fprintf(stderr, "pthread_trace: Writing trace to '%s'\n", path);
 
-    interned_data = std::make_unique<proto::buffer<512>>();
+    interned_data = proto::buffer<512>();
     write_interned_data(*interned_data);
 
     initialized = true;
@@ -548,7 +553,7 @@ public:
     if (initializing) return;
     initializing = true;
     init_trace();
-    global_buffer = file.get();
+    global_buffer = &*file;
     begin_block(/*first=*/true);
   }
 
@@ -606,9 +611,6 @@ public:
 
 extern "C" {
 
-
-
-
 unsigned int sleep(unsigned int secs) {
   if (!hooks::sleep) hooks::init<true>(hooks::sleep, __sleep, "sleep");
 
@@ -622,7 +624,7 @@ unsigned int sleep(unsigned int secs) {
 
 int usleep(useconds_t usecs) {
   if (!hooks::usleep) hooks::init<true>(hooks::usleep, __usleep, "usleep");
-  
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_usleep);
   assert(hooks::usleep);
@@ -633,7 +635,7 @@ int usleep(useconds_t usecs) {
 
 int nanosleep(const struct timespec* duration, struct timespec* rem) {
   if (!hooks::nanosleep) hooks::init<true>(hooks::nanosleep, __nanosleep, "nanosleep");
-  
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_nanosleep);
   assert(hooks::nanosleep);
