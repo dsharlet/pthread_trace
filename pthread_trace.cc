@@ -341,12 +341,12 @@ static std::atomic<int> next_sequence_id{0};
 
 sequence_id_type new_sequence_id() {
   static constexpr uint8_t tag = make_tag(TracePacket::trusted_packet_sequence_id, proto::wire_type::varint);
-  uint64_t id = proto::to_varint(++next_sequence_id);
+  uint64_t id = ++next_sequence_id;
   sequence_id_type result;
   result[0] = tag;
   result[1] = static_cast<uint8_t>(id) | proto::varint_continuation;
-  result[2] = static_cast<uint8_t>(id >> 8) | proto::varint_continuation;
-  result[3] = static_cast<uint8_t>(id >> 16) & ~proto::varint_continuation;
+  result[2] = static_cast<uint8_t>(id >> 7) | proto::varint_continuation;
+  result[3] = static_cast<uint8_t>(id >> 14) & ~proto::varint_continuation;
   return result;
 }
 
