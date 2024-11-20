@@ -96,7 +96,6 @@ enum {
 };
 }
 
-// https://cs.android.com/android/platform/superproject/main/+/main:external/perfetto/protos/perfetto/trace/clock_snapshot.proto
 namespace Clock {
 enum {
   /*optional uint32*/ clock_id = 1,

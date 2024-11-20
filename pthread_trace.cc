@@ -31,9 +31,9 @@ using namespace perfetto;
 
 extern "C" {
 
-// In some environments, dlsym itself uses pthreads/sleep, which breaks our hooking mechanism.
-// These same environments have these non-standard-looking functions, so we can skip dlsym.
-// Mark these as weak in case they don't exist everywhere.
+// In some environments, dlsym itself uses malloc which uses pthreads/sleep, which breaks
+// our hooking mechanism. These same environments have these non-standard-looking functions,
+// so we can skip dlsym. Mark these as weak in case they don't exist everywhere.
 WEAK unsigned int __sleep(unsigned int);
 WEAK int __usleep(useconds_t);
 WEAK int __nanosleep(const struct timespec*, struct timespec*);
@@ -249,7 +249,6 @@ class circular_file {
 
 public:
   circular_file(const char* path, size_t blocks) {
-    // Don't use O_TRUNC here, it might truncate the file after we started writing it from another thread.
     fd = ::open(path, O_CREAT | O_RDWR | O_TRUNC, S_IRWXU);
     if (fd < 0) {
       fprintf(stderr, "pthread_trace: Error opening file '%s': %s\n", path, strerror(errno));
@@ -293,7 +292,8 @@ public:
   }
 };
 
-// We cannot use global constructors due to undefined global constructor order.
+// These are optional to avoid non-trivial global constructors. An alternative would be to use
+// a global pointer, but we also want to avoid malloc.
 std::optional<circular_file> file = std::nullopt;
 std::optional<proto::buffer<512>> interned_data = std::nullopt;
 
@@ -330,7 +330,7 @@ NOINLINE void init_trace() {
     initialized = true;
   } else {
     while (!initialized.load()) {
-      // Don't use anything that might recursively call init_trace.
+      // Don't use anything that might recursively call init_trace (sched_yield).
     }
   }
 }
@@ -625,7 +625,7 @@ unsigned int sleep(unsigned int secs) {
   t.write_begin(slice_begin_sleep);
   if (!hooks::sleep) hooks::init(hooks::sleep, __sleep, "sleep");
   unsigned int result = hooks::sleep(secs);
-  t.write_end();  // slice_begin_sleep
+  t.write_end();
   return result;
 }
 
@@ -634,7 +634,7 @@ int usleep(useconds_t usecs) {
   t.write_begin(slice_begin_usleep);
   if (!hooks::usleep) hooks::init(hooks::usleep, __usleep, "usleep");
   int result = hooks::usleep(usecs);
-  t.write_end();  // slice_begin_usleep
+  t.write_end();
   return result;
 }
 
@@ -643,7 +643,7 @@ int nanosleep(const struct timespec* duration, struct timespec* rem) {
   t.write_begin(slice_begin_nanosleep);
   if (!hooks::nanosleep) hooks::init(hooks::nanosleep, __nanosleep, "nanosleep");
   int result = hooks::nanosleep(duration, rem);
-  t.write_end();  // slice_begin_nanosleep
+  t.write_end();
   return result;
 }
 
@@ -652,7 +652,7 @@ int sched_yield() {
   t.write_begin(slice_begin_yield);
   if (!hooks::sched_yield) hooks::init(hooks::sched_yield, __sched_yield, "sched_yield");
   int result = hooks::sched_yield();
-  t.write_end();  // slice_begin_yield
+  t.write_end();
   return result;
 }
 
@@ -662,7 +662,7 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
   if (!hooks::pthread_cond_broadcast)
     hooks::init(hooks::pthread_cond_broadcast, __pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
   int result = hooks::pthread_cond_broadcast(cond);
-  t.write_end();  // slice_begin_cond_broadcast
+  t.write_end();
   return result;
 }
 
@@ -672,7 +672,7 @@ int pthread_cond_signal(pthread_cond_t* cond) {
   if (!hooks::pthread_cond_signal)
     hooks::init(hooks::pthread_cond_signal, __pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
   int result = hooks::pthread_cond_signal(cond);
-  t.write_end();  // slice_begin_cond_signal
+  t.write_end();
   return result;
 }
 
@@ -684,7 +684,7 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
   if (!hooks::pthread_cond_timedwait)
     hooks::init(hooks::pthread_cond_timedwait, __pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
   int result = hooks::pthread_cond_timedwait(cond, mutex, abstime);
-  t.write_end();  // slice_begin_cond_timedwait
+  t.write_end();
   t.write_begin_mutex_locked("mutex", mutex);
   return result;
 }
@@ -697,7 +697,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
   if (!hooks::pthread_cond_wait)
     hooks::init(hooks::pthread_cond_wait, __pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
   int result = hooks::pthread_cond_wait(cond, mutex);
-  t.write_end();  // slice_begin_cond_wait
+  t.write_end();
   t.write_begin_mutex_locked("mutex", mutex);
   return result;
 }
@@ -707,7 +707,7 @@ int pthread_join(pthread_t thread, void** value_ptr) {
   t.write_begin(slice_begin_join);
   if (!hooks::pthread_join) hooks::init(hooks::pthread_join, __pthread_join, "pthread_join");
   int result = hooks::pthread_join(thread, value_ptr);
-  t.write_end();  // slice_begin_join
+  t.write_end();
   return result;
 }
 
@@ -717,7 +717,7 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
   if (!hooks::pthread_mutex_lock)
     hooks::init(hooks::pthread_mutex_lock, __pthread_mutex_lock, "pthread_mutex_lock");
   int result = hooks::pthread_mutex_lock(mutex);
-  t.write_end();  // slice_begin_mutex_lock
+  t.write_end();
   t.write_begin_mutex_locked("mutex", mutex);
   return result;
 }
@@ -728,7 +728,7 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
   if (!hooks::pthread_mutex_trylock)
     hooks::init(hooks::pthread_mutex_trylock, __pthread_mutex_trylock, "pthread_mutex_trylock");
   int result = hooks::pthread_mutex_trylock(mutex);
-  t.write_end();  // slice_begin_mutex_trylock
+  t.write_end();
   if (result == 0) {
     t.write_begin_mutex_locked("mutex", mutex);
   }
@@ -742,7 +742,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
   if (!hooks::pthread_mutex_unlock)
     hooks::init(hooks::pthread_mutex_unlock, __pthread_mutex_unlock, "pthread_mutex_unlock");
   int result = hooks::pthread_mutex_unlock(mutex);
-  t.write_end();  // slice_begin_mutex_unlock
+  t.write_end();
   return result;
 }
 
@@ -751,7 +751,7 @@ int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
   t.write_begin(slice_begin_once);
   if (!hooks::pthread_once) hooks::init(hooks::pthread_once, __pthread_once, "pthread_once");
   int result = hooks::pthread_once(once_control, init_routine);
-  t.write_end();  // slice_begin_once
+  t.write_end();
   return result;
 }
 

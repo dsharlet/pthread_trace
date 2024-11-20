@@ -13,11 +13,9 @@ cc_test(
     size = "small",
 )
 
-# We don't have good tests of tracing itself. It's hard to test:
-# - Traces are nondeterministic (they contain pointers and timestamps)
-# - I haven't figured out how to use it without LD_PRELOAD
-# The best we have for now is just running one of the benchmarks that use pthreads with tracing,
-# and verifying it doesn't crash and we see expected pthread_trace output.
+# We don't have good tests of tracing itself. It's hard to test because traces are nondeterministic,
+# they contain pointers and timestamps. The best we have for now is just running one of the benchmarks
+# that use pthreads with tracing, and verifying it doesn't crash and we see expected pthread_trace output.
 sh_test(
     name = "ld_preload_test_thread_benchmark",
     srcs = ["ld_preload_test.sh"],
