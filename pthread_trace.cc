@@ -310,27 +310,6 @@ NOINLINE void init_trace() {
 
   bool not_initializing = false;
   if (initializing.compare_exchange_strong(not_initializing, true)) {
-    hooks::init<true>(hooks::sleep, __sleep, "sleep");
-    hooks::init<true>(hooks::usleep, __usleep, "usleep");
-    hooks::init<true>(hooks::nanosleep, __nanosleep, "nanosleep");
-    hooks::init<true>(hooks::sched_yield, __sched_yield, "sched_yield");
-
-    hooks::init<true>(hooks::pthread_cond_broadcast, __pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
-    hooks::init<true>(hooks::pthread_cond_signal, __pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
-    hooks::init<true>(hooks::pthread_cond_timedwait, __pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
-    hooks::init<true>(hooks::pthread_cond_wait, __pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
-    hooks::init<true>(hooks::pthread_join, __pthread_join, "pthread_join");
-    hooks::init<true>(hooks::pthread_mutex_lock, __pthread_mutex_lock, "pthread_mutex_lock");
-    hooks::init<true>(hooks::pthread_mutex_trylock, __pthread_mutex_trylock, "pthread_mutex_trylock");
-    hooks::init<true>(hooks::pthread_mutex_unlock, __pthread_mutex_unlock, "pthread_mutex_unlock");
-    hooks::init<true>(hooks::pthread_once, __pthread_once, "pthread_once");
-    hooks::init<false>(hooks::pthread_barrier_wait, __pthread_barrier_wait, "pthread_barrier_wait");
-
-    hooks::init<true>(hooks::sem_wait, __sem_wait, "sem_wait");
-    hooks::init<true>(hooks::sem_timedwait, __sem_timedwait, "sem_timedwait");
-    hooks::init<true>(hooks::sem_trywait, __sem_trywait, "sem_trywait");
-    hooks::init<true>(hooks::sem_post, __sem_post, "sem_post");
-
     const char* path = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
     const char* buffer_size_str = getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536");
     int buffer_size_kb = atoi(buffer_size_str);
@@ -622,7 +601,12 @@ public:
 
 extern "C" {
 
+
+
+
 unsigned int sleep(unsigned int secs) {
+  if (!hooks::sleep) hooks::init<true>(hooks::sleep, __sleep, "sleep");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sleep);
   assert(hooks::sleep);
@@ -632,6 +616,8 @@ unsigned int sleep(unsigned int secs) {
 }
 
 int usleep(useconds_t usecs) {
+  if (!hooks::usleep) hooks::init<true>(hooks::usleep, __usleep, "usleep");
+  
   auto& t = track::get_thread();
   t.write_begin(slice_begin_usleep);
   assert(hooks::usleep);
@@ -641,6 +627,8 @@ int usleep(useconds_t usecs) {
 }
 
 int nanosleep(const struct timespec* duration, struct timespec* rem) {
+  if (!hooks::nanosleep) hooks::init<true>(hooks::nanosleep, __nanosleep, "nanosleep");
+  
   auto& t = track::get_thread();
   t.write_begin(slice_begin_nanosleep);
   assert(hooks::nanosleep);
@@ -650,6 +638,8 @@ int nanosleep(const struct timespec* duration, struct timespec* rem) {
 }
 
 int sched_yield() {
+  if (!hooks::sched_yield) hooks::init<true>(hooks::sched_yield, __sched_yield, "sched_yield");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_yield);
   assert(hooks::sched_yield);
@@ -659,6 +649,9 @@ int sched_yield() {
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond) {
+  if (!hooks::pthread_cond_broadcast)
+    hooks::init<true>(hooks::pthread_cond_broadcast, __pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_cond_broadcast);
   assert(hooks::pthread_cond_broadcast);
@@ -668,6 +661,9 @@ int pthread_cond_broadcast(pthread_cond_t* cond) {
 }
 
 int pthread_cond_signal(pthread_cond_t* cond) {
+  if (!hooks::pthread_cond_signal)
+    hooks::init<true>(hooks::pthread_cond_signal, __pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_cond_signal);
   assert(hooks::pthread_cond_signal);
@@ -677,6 +673,9 @@ int pthread_cond_signal(pthread_cond_t* cond) {
 }
 
 int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime) {
+  if (!hooks::pthread_cond_timedwait)
+    hooks::init<true>(hooks::pthread_cond_timedwait, __pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
+
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
@@ -689,6 +688,9 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
 }
 
 int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
+  if (!hooks::pthread_cond_wait)
+    hooks::init<true>(hooks::pthread_cond_wait, __pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
+
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
@@ -701,6 +703,8 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
 }
 
 int pthread_join(pthread_t thread, void** value_ptr) {
+  if (!hooks::pthread_join) hooks::init<true>(hooks::pthread_join, __pthread_join, "pthread_join");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_join);
   assert(hooks::pthread_join);
@@ -710,6 +714,9 @@ int pthread_join(pthread_t thread, void** value_ptr) {
 }
 
 int pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (!hooks::pthread_mutex_lock)
+    hooks::init<true>(hooks::pthread_mutex_lock, __pthread_mutex_lock, "pthread_mutex_lock");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_mutex_lock);
   assert(hooks::pthread_mutex_lock);
@@ -720,6 +727,9 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
 }
 
 int pthread_mutex_trylock(pthread_mutex_t* mutex) {
+  if (!hooks::pthread_mutex_trylock)
+    hooks::init<true>(hooks::pthread_mutex_trylock, __pthread_mutex_trylock, "pthread_mutex_trylock");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_mutex_trylock);
   assert(hooks::pthread_mutex_trylock);
@@ -732,6 +742,9 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
 }
 
 int pthread_mutex_unlock(pthread_mutex_t* mutex) {
+  if (!hooks::pthread_mutex_unlock)
+    hooks::init<true>(hooks::pthread_mutex_unlock, __pthread_mutex_unlock, "pthread_mutex_unlock");
+
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
   t.write_begin(slice_begin_mutex_unlock);
@@ -742,6 +755,8 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex) {
 }
 
 int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
+  if (!hooks::pthread_once) hooks::init<true>(hooks::pthread_once, __pthread_once, "pthread_once");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_once);
   assert(hooks::pthread_once);
@@ -751,6 +766,8 @@ int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
 }
 
 int pthread_barrier_wait(pthread_barrier_t* barrier) {
+  hooks::init<false>(hooks::pthread_barrier_wait, __pthread_barrier_wait, "pthread_barrier_wait");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_barrier_wait);
   assert(hooks::pthread_barrier_wait);
@@ -760,6 +777,8 @@ int pthread_barrier_wait(pthread_barrier_t* barrier) {
 }
 
 int sem_wait(sem_t* sem) {
+  if (!hooks::sem_wait) hooks::init<true>(hooks::sem_wait, __sem_wait, "sem_wait");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sem_wait);
   assert(hooks::sem_wait);
@@ -770,6 +789,8 @@ int sem_wait(sem_t* sem) {
 }
 
 int sem_timedwait(sem_t* sem, const struct timespec* abstime) {
+  if (!hooks::sem_timedwait) hooks::init<true>(hooks::sem_timedwait, __sem_timedwait, "sem_timedwait");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sem_timedwait);
   assert(hooks::sem_timedwait);
@@ -782,6 +803,8 @@ int sem_timedwait(sem_t* sem, const struct timespec* abstime) {
 }
 
 int sem_trywait(sem_t* sem) {
+  if (!hooks::sem_trywait) hooks::init<true>(hooks::sem_trywait, __sem_trywait, "sem_trywait");
+
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sem_trywait);
   assert(hooks::sem_trywait);
@@ -794,6 +817,8 @@ int sem_trywait(sem_t* sem) {
 }
 
 int sem_post(sem_t* sem) {
+  if (!hooks::sem_post) hooks::init<true>(hooks::sem_post, __sem_post, "sem_post");
+
   auto& t = track::get_thread();
   t.write_end_mutex_locked("semaphore", sem);
   t.write_begin(slice_begin_sem_post);
