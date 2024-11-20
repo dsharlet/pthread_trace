@@ -22,11 +22,13 @@ sh_test(
     name = "ld_preload_test_thread_benchmark",
     srcs = ["ld_preload_test.sh"],
     data = [
+        ":is_perfetto_trace",
         ":thread_benchmark",
         "//:pthread_trace.so",
     ],
     args = [
-        "$(location //:pthread_trace.so)", 
+        "$(location :is_perfetto_trace)",
+        "$(location //:pthread_trace.so)",
         "$(location :thread_benchmark)",
         "--benchmark_min_time=1x",
     ],
@@ -55,8 +57,12 @@ cc_binary(
 sh_test(
     name = "linked_test_thread_benchmark",
     srcs = ["linked_test.sh"],
-    data = [":traced_thread_benchmark"],
+    data = [
+        ":is_perfetto_trace",
+        ":traced_thread_benchmark",
+    ],
     args = [
+        "$(location :is_perfetto_trace)",
         "$(location :traced_thread_benchmark)",
         "--benchmark_min_time=1x",
     ],
@@ -72,4 +78,10 @@ cc_test(
     ],
     args = ["--benchmark_min_time=1x"],
     size = "small",
+)
+
+cc_binary(
+    name = "is_perfetto_trace",
+    srcs = ["is_perfetto_trace.cc"],
+    deps = ["//:proto"],
 )

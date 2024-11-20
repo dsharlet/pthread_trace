@@ -9,13 +9,11 @@
 
 namespace proto {
 
-namespace {
-
 namespace internal {
 
-constexpr size_t sum() { return 0; }
+static inline constexpr size_t sum() { return 0; }
 template <class... Args>
-constexpr size_t sum(size_t a, Args... args) {
+static inline constexpr size_t sum(size_t a, Args... args) {
   return a + sum(args...);
 }
 
@@ -31,7 +29,7 @@ enum class wire_type {
 constexpr uint8_t varint_continuation = 0x80;
 
 // Convert an integer to a varint. May overflow if the result doesn't fit in 64 bits, but can be used constexpr.
-constexpr uint64_t to_varint(uint64_t value) {
+static inline constexpr uint64_t to_varint(uint64_t value) {
   uint64_t result = 0;
   while (value > 0x7f) {
     result |= static_cast<uint8_t>(value | varint_continuation);
@@ -42,7 +40,7 @@ constexpr uint64_t to_varint(uint64_t value) {
   return result;
 }
 
-size_t write_varint(uint8_t* dst, uint64_t value) {
+static inline size_t write_varint(uint8_t* dst, uint64_t value) {
   size_t result = 0;
   while (value > 0x7f) {
     dst[result++] = static_cast<uint8_t>(value | varint_continuation);
@@ -52,14 +50,28 @@ size_t write_varint(uint8_t* dst, uint64_t value) {
   return result;
 }
 
-constexpr uint64_t make_tag(uint64_t tag, wire_type type) { return to_varint((tag << 3) | static_cast<uint8_t>(type)); }
+static inline size_t read_varint(uint64_t& result, const uint8_t* data, size_t size) {
+  result = 0;
+  uint64_t shift = 0;
+  for (size_t i = 1; i <= size; ++i) {
+    uint8_t b = *data++;
+    result |= (b & 0x7f) << shift;
+    shift += 7;
+    if ((b & 0x80) == 0) return i;
+  }
+  return 0;
+}
 
-size_t write_tag(uint8_t* dst, uint64_t tag, wire_type type) {
+static inline constexpr uint64_t make_tag(uint64_t tag, wire_type type) {
+  return to_varint((tag << 3) | static_cast<uint8_t>(type));
+}
+
+static inline size_t write_tag(uint8_t* dst, uint64_t tag, wire_type type) {
   return write_varint(dst, (tag << 3) | static_cast<uint64_t>(type));
 }
 
 // Size must be >= 2.
-size_t write_padding(uint8_t* dst, uint64_t tag, uint64_t size) {
+static inline size_t write_padding(uint8_t* dst, uint64_t tag, uint64_t size) {
   size_t result = 0;
   while (size != 0) {
     assert(size != 1);
@@ -225,8 +237,6 @@ public:
     write_all(fields...);
   }
 };
-
-}  // namespace
 
 }  // namespace proto
 

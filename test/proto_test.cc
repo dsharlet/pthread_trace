@@ -9,12 +9,7 @@ namespace proto {
 
 uint64_t decode_varint(const std::vector<uint8_t>& bytes) {
   uint64_t result = 0;
-  uint64_t shift = 0;
-  for (uint8_t i : bytes) {
-    result |= (i & 0x7f) << shift;
-    shift += 7;
-    if ((i & 0x80) == 0) break;
-  }
+  read_varint(result, bytes.data(), bytes.size());
   return result;
 }
 
