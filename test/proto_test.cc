@@ -17,13 +17,19 @@ uint64_t decode_varint(const std::vector<uint8_t>& bytes) {
   return result;
 }
 
+uint64_t decode_varint(uint64_t bytes) {
+  uint64_t result = 0;
+  read_varint(result, reinterpret_cast<uint8_t*>(&bytes), sizeof(bytes));
+  return result;
+}
+
 TEST(proto, to_varint) {
   for (uint64_t i = 0; i <= 0x7f; ++i) {
     ASSERT_EQ(to_varint(i), i);
   }
-  ASSERT_EQ(to_varint(0x80), 0x8001);
-  ASSERT_EQ(to_varint(0x81), 0x8101);
-  ASSERT_EQ(to_varint(0x82), 0x8201);
+  ASSERT_EQ(to_varint(0x80), 0x0180);
+  ASSERT_EQ(to_varint(0x81), 0x0181);
+  ASSERT_EQ(to_varint(0x82), 0x0182);
 }
 
 // Wrappers that make testing easier.
@@ -57,6 +63,13 @@ TEST(proto, write_varint) {
 
   write_varint(varint, std::numeric_limits<uint64_t>::max());
   ASSERT_EQ(decode_varint(varint), std::numeric_limits<uint64_t>::max());
+}
+
+TEST(proto, to_varint_matches_write_varint) {
+  for (size_t i = 0; i < 1ull << 20; ++i) {
+    uint64_t to = to_varint(i);
+    ASSERT_EQ(decode_varint(to), i) << i;
+  }
 }
 
 TEST(proto, write_padding) {

@@ -32,12 +32,13 @@ constexpr uint8_t varint_continuation = 0x80;
 // Convert an integer to a varint. May overflow if the result doesn't fit in 64 bits, but can be used constexpr.
 static inline constexpr uint64_t to_varint(uint64_t value) {
   uint64_t result = 0;
+  uint64_t shift = 0;
   while (value > 0x7f) {
-    result |= static_cast<uint8_t>(value | varint_continuation);
-    result <<= 8;
+    result |= (static_cast<uint8_t>(value) | varint_continuation) << shift;
     value >>= 7;
+    shift += 8;
   }
-  result |= static_cast<uint8_t>(value);
+  result |= static_cast<uint8_t>(value) << shift;
   return result;
 }
 
