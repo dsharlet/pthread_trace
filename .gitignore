@@ -42,9 +42,10 @@ bazel-*
 # perf outputs
 perf.data*
 
-# Tracing outputs
+# Tracing outputs/tools
 *.json
 *.proto
+traceconv
 
 # Local helper scripts used by some contributors
 run-clang-format.sh
