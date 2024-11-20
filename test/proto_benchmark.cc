@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <random>
+#include <vector>
 
 #include "proto.h"
 
