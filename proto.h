@@ -34,11 +34,11 @@ static inline constexpr uint64_t to_varint(uint64_t value) {
   uint64_t result = 0;
   uint64_t shift = 0;
   while (value > 0x7f) {
-    result |= (static_cast<uint8_t>(value) | varint_continuation) << shift;
+    result |= static_cast<uint64_t>(static_cast<uint8_t>(value) | varint_continuation) << shift;
     value >>= 7;
     shift += 8;
   }
-  result |= static_cast<uint8_t>(value) << shift;
+  result |= static_cast<uint64_t>(value) << shift;
   return result;
 }
 
@@ -57,7 +57,7 @@ static inline size_t read_varint(uint64_t& result, const uint8_t* data, size_t s
   uint64_t shift = 0;
   for (size_t i = 1; i <= size; ++i) {
     uint8_t b = *data++;
-    result |= (b & 0x7f) << shift;
+    result |= static_cast<uint64_t>(b & 0x7f) << shift;
     shift += 7;
     if ((b & 0x80) == 0) return i;
   }
