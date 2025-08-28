@@ -304,6 +304,25 @@ const char* getenv_or(const char* env, const char* def) {
 std::atomic<bool> initializing{false};
 std::atomic<bool> initialized{false};
 
+const char* get_trace_path() {
+  const char* path_ptr = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
+  // If running as a bazel test, and the path is not an absolute path, prepend
+  // the test output directory to the path.
+  if (path_ptr[0] == '/') {
+    return path_ptr;
+  }
+  const char* path_prefix_ptr = getenv_or("TEST_UNDECLARED_OUTPUTS_DIR", "");
+  static constexpr int path_buf_size = 4096;
+  static char path_buf[path_buf_size];
+  const int len =
+      snprintf(path_buf, path_buf_size, "%s/%s", path_prefix_ptr, path_ptr);
+  if (len < 0 || len >= path_buf_size) {
+    fprintf(stderr, "pthread_trace: Path too long or snprintf error.\n");
+    exit(1);
+  }
+  return path_buf;
+}
+
 NOINLINE void init_trace() {
   // It seems like we could initialize the pthread_once hook, and use it here. However,
   // some pthread_once implementations use pthread_mutex internally (ask me how I know),
@@ -311,7 +330,7 @@ NOINLINE void init_trace() {
 
   bool not_initializing = false;
   if (initializing.compare_exchange_strong(not_initializing, true)) {
-    const char* path = getenv_or("PTHREAD_TRACE_PATH", "pthread_trace.proto");
+    const char* path = get_trace_path();
     const char* buffer_size_str = getenv_or("PTHREAD_TRACE_BUFFER_SIZE_KB", "65536");
     int buffer_size_kb = atoi(buffer_size_str);
     int blocks = (buffer_size_kb + block_size_kb - 1) / block_size_kb;
