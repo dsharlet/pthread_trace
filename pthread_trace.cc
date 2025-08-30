@@ -59,6 +59,41 @@ WEAK int __sem_post(sem_t*);
 
 namespace {
 
+// Global flags to control instrumentation.
+bool g_instrument_sleep = true;
+bool g_instrument_condvar = true;
+bool g_instrument_mutex = true;
+bool g_instrument_semaphore = true;
+bool g_instrument_misc = true;
+
+/**
+ * @brief This function is executed when the library is loaded.
+ *
+ * It reads environment variables to configure which instrumentation points
+ * should be disabled. Instrumentation is enabled by default and is only
+ * disabled if the corresponding environment variable is explicitly set to "0".
+ * E.g. `export INSTRUMENT_SLEEP=0` will disable sleep instrumentation.
+ */
+__attribute__((constructor))
+void read_instrumentation_flags() {
+  const char* val;
+  val = getenv("INSTRUMENT_SLEEP");
+  if (val && strcmp(val, "0") == 0) g_instrument_sleep = false;
+
+  val = getenv("INSTRUMENT_CONDVAR");
+  if (val && strcmp(val, "0") == 0) g_instrument_condvar = false;
+
+  val = getenv("INSTRUMENT_MUTEX");
+  if (val && strcmp(val, "0") == 0) g_instrument_mutex = false;
+
+  val = getenv("INSTRUMENT_SEMAPHORE");
+  if (val && strcmp(val, "0") == 0) g_instrument_semaphore = false;
+
+  val = getenv("INSTRUMENT_MISC");
+  if (val && strcmp(val, "0") == 0) g_instrument_misc = false;
+}
+
+
 namespace hooks {
 
 unsigned int (*sleep)(unsigned int) = nullptr;
@@ -639,68 +674,89 @@ track track::dummy{std::false_type()};
 extern "C" {
 
 unsigned int sleep(unsigned int secs) {
+  if (!hooks::sleep) hooks::init(hooks::sleep, __sleep, "sleep");
+  if (!g_instrument_sleep) {
+    return hooks::sleep(secs);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sleep);
-  if (!hooks::sleep) hooks::init(hooks::sleep, __sleep, "sleep");
   unsigned int result = hooks::sleep(secs);
   t.write_end();
   return result;
 }
 
 int usleep(useconds_t usecs) {
+  if (!hooks::usleep) hooks::init(hooks::usleep, __usleep, "usleep");
+  if (!g_instrument_sleep) {
+    return hooks::usleep(usecs);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_usleep);
-  if (!hooks::usleep) hooks::init(hooks::usleep, __usleep, "usleep");
   int result = hooks::usleep(usecs);
   t.write_end();
   return result;
 }
 
 int nanosleep(const struct timespec* duration, struct timespec* rem) {
+  if (!hooks::nanosleep) hooks::init(hooks::nanosleep, __nanosleep, "nanosleep");
+  if (!g_instrument_sleep) {
+    return hooks::nanosleep(duration, rem);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_nanosleep);
-  if (!hooks::nanosleep) hooks::init(hooks::nanosleep, __nanosleep, "nanosleep");
   int result = hooks::nanosleep(duration, rem);
   t.write_end();
   return result;
 }
 
 int sched_yield() {
+  if (!hooks::sched_yield) hooks::init(hooks::sched_yield, __sched_yield, "sched_yield");
+  if (!g_instrument_misc) {
+    return hooks::sched_yield();
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_yield);
-  if (!hooks::sched_yield) hooks::init(hooks::sched_yield, __sched_yield, "sched_yield");
   int result = hooks::sched_yield();
   t.write_end();
   return result;
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond) {
-  auto& t = track::get_thread();
-  t.write_begin(slice_begin_cond_broadcast);
   if (!hooks::pthread_cond_broadcast)
     hooks::init(hooks::pthread_cond_broadcast, __pthread_cond_broadcast, "pthread_cond_broadcast", "GLIBC_2.3.2");
+  if (!g_instrument_condvar) {
+    return hooks::pthread_cond_broadcast(cond);
+  }
+  auto& t = track::get_thread();
+  t.write_begin(slice_begin_cond_broadcast);
   int result = hooks::pthread_cond_broadcast(cond);
   t.write_end();
   return result;
 }
 
 int pthread_cond_signal(pthread_cond_t* cond) {
-  auto& t = track::get_thread();
-  t.write_begin(slice_begin_cond_signal);
   if (!hooks::pthread_cond_signal)
     hooks::init(hooks::pthread_cond_signal, __pthread_cond_signal, "pthread_cond_signal", "GLIBC_2.3.2");
+  if (!g_instrument_condvar) {
+    return hooks::pthread_cond_signal(cond);
+  }
+  auto& t = track::get_thread();
+  t.write_begin(slice_begin_cond_signal);
   int result = hooks::pthread_cond_signal(cond);
   t.write_end();
   return result;
 }
 
 int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const struct timespec* abstime) {
+  if (!hooks::pthread_cond_timedwait)
+    hooks::init(hooks::pthread_cond_timedwait, __pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
+  if (!g_instrument_condvar) {
+    return hooks::pthread_cond_timedwait(cond, mutex, abstime);
+  }
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
   t.write_begin(slice_begin_cond_timedwait);
-  if (!hooks::pthread_cond_timedwait)
-    hooks::init(hooks::pthread_cond_timedwait, __pthread_cond_timedwait, "pthread_cond_timedwait", "GLIBC_2.3.2");
   int result = hooks::pthread_cond_timedwait(cond, mutex, abstime);
   t.write_end();
   t.write_begin_mutex_locked("mutex", mutex);
@@ -708,12 +764,15 @@ int pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex_t* mutex, const s
 }
 
 int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
+  if (!hooks::pthread_cond_wait)
+    hooks::init(hooks::pthread_cond_wait, __pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
+  if (!g_instrument_condvar) {
+    return hooks::pthread_cond_wait(cond, mutex);
+  }
   // When we wait on a cond var, the mutex gets unlocked, and then relocked before returning.
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
   t.write_begin(slice_begin_cond_wait);
-  if (!hooks::pthread_cond_wait)
-    hooks::init(hooks::pthread_cond_wait, __pthread_cond_wait, "pthread_cond_wait", "GLIBC_2.3.2");
   int result = hooks::pthread_cond_wait(cond, mutex);
   t.write_end();
   t.write_begin_mutex_locked("mutex", mutex);
@@ -721,18 +780,24 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
 }
 
 int pthread_join(pthread_t thread, void** value_ptr) {
+  if (!hooks::pthread_join) hooks::init(hooks::pthread_join, __pthread_join, "pthread_join");
+  if (!g_instrument_misc) {
+    return hooks::pthread_join(thread, value_ptr);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_join);
-  if (!hooks::pthread_join) hooks::init(hooks::pthread_join, __pthread_join, "pthread_join");
   int result = hooks::pthread_join(thread, value_ptr);
   t.write_end();
   return result;
 }
 
 int pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (!hooks::pthread_mutex_lock) hooks::init(hooks::pthread_mutex_lock, __pthread_mutex_lock, "pthread_mutex_lock");
+  if (!g_instrument_mutex) {
+    return hooks::pthread_mutex_lock(mutex);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_mutex_lock);
-  if (!hooks::pthread_mutex_lock) hooks::init(hooks::pthread_mutex_lock, __pthread_mutex_lock, "pthread_mutex_lock");
   int result = hooks::pthread_mutex_lock(mutex);
   t.write_end();
   t.write_begin_mutex_locked("mutex", mutex);
@@ -740,10 +805,13 @@ int pthread_mutex_lock(pthread_mutex_t* mutex) {
 }
 
 int pthread_mutex_trylock(pthread_mutex_t* mutex) {
-  auto& t = track::get_thread();
-  t.write_begin(slice_begin_mutex_trylock);
   if (!hooks::pthread_mutex_trylock)
     hooks::init(hooks::pthread_mutex_trylock, __pthread_mutex_trylock, "pthread_mutex_trylock");
+  if (!g_instrument_mutex) {
+    return hooks::pthread_mutex_trylock(mutex);
+  }
+  auto& t = track::get_thread();
+  t.write_begin(slice_begin_mutex_trylock);
   int result = hooks::pthread_mutex_trylock(mutex);
   t.write_end();
   if (result == 0) {
@@ -753,38 +821,50 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex) {
 }
 
 int pthread_mutex_unlock(pthread_mutex_t* mutex) {
+  if (!hooks::pthread_mutex_unlock)
+    hooks::init(hooks::pthread_mutex_unlock, __pthread_mutex_unlock, "pthread_mutex_unlock");
+  if (!g_instrument_mutex) {
+    return hooks::pthread_mutex_unlock(mutex);
+  }
   auto& t = track::get_thread();
   t.write_end_mutex_locked("mutex", mutex);
   t.write_begin(slice_begin_mutex_unlock);
-  if (!hooks::pthread_mutex_unlock)
-    hooks::init(hooks::pthread_mutex_unlock, __pthread_mutex_unlock, "pthread_mutex_unlock");
   int result = hooks::pthread_mutex_unlock(mutex);
   t.write_end();
   return result;
 }
 
 int pthread_once(pthread_once_t* once_control, void (*init_routine)(void)) {
+  if (!hooks::pthread_once) hooks::init(hooks::pthread_once, __pthread_once, "pthread_once");
+  if (!g_instrument_misc) {
+    return hooks::pthread_once(once_control, init_routine);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_once);
-  if (!hooks::pthread_once) hooks::init(hooks::pthread_once, __pthread_once, "pthread_once");
   int result = hooks::pthread_once(once_control, init_routine);
   t.write_end();
   return result;
 }
 
 int pthread_barrier_wait(pthread_barrier_t* barrier) {
+  hooks::init(hooks::pthread_barrier_wait, __pthread_barrier_wait, "pthread_barrier_wait");
+  if (!g_instrument_misc) {
+    return hooks::pthread_barrier_wait(barrier);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_barrier_wait);
-  hooks::init(hooks::pthread_barrier_wait, __pthread_barrier_wait, "pthread_barrier_wait");
   int result = hooks::pthread_barrier_wait(barrier);
   t.write_end();
   return result;
 }
 
 int sem_wait(sem_t* sem) {
+  if (!hooks::sem_wait) hooks::init(hooks::sem_wait, __sem_wait, "sem_wait");
+  if (!g_instrument_semaphore) {
+    return hooks::sem_wait(sem);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sem_wait);
-  if (!hooks::sem_wait) hooks::init(hooks::sem_wait, __sem_wait, "sem_wait");
   int result = hooks::sem_wait(sem);
   t.write_end();
   t.write_begin_mutex_locked("semaphore", sem);
@@ -792,9 +872,12 @@ int sem_wait(sem_t* sem) {
 }
 
 int sem_timedwait(sem_t* sem, const struct timespec* abstime) {
+  if (!hooks::sem_timedwait) hooks::init(hooks::sem_timedwait, __sem_timedwait, "sem_timedwait");
+  if (!g_instrument_semaphore) {
+    return hooks::sem_timedwait(sem, abstime);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sem_timedwait);
-  if (!hooks::sem_timedwait) hooks::init(hooks::sem_timedwait, __sem_timedwait, "sem_timedwait");
   int result = hooks::sem_timedwait(sem, abstime);
   t.write_end();
   if (result == 0) {
@@ -804,9 +887,12 @@ int sem_timedwait(sem_t* sem, const struct timespec* abstime) {
 }
 
 int sem_trywait(sem_t* sem) {
+  if (!hooks::sem_trywait) hooks::init(hooks::sem_trywait, __sem_trywait, "sem_trywait");
+  if (!g_instrument_semaphore) {
+    return hooks::sem_trywait(sem);
+  }
   auto& t = track::get_thread();
   t.write_begin(slice_begin_sem_trywait);
-  if (!hooks::sem_trywait) hooks::init(hooks::sem_trywait, __sem_trywait, "sem_trywait");
   int result = hooks::sem_trywait(sem);
   t.write_end();
   if (result == 0) {
@@ -816,10 +902,13 @@ int sem_trywait(sem_t* sem) {
 }
 
 int sem_post(sem_t* sem) {
+  if (!hooks::sem_post) hooks::init(hooks::sem_post, __sem_post, "sem_post");
+  if (!g_instrument_semaphore) {
+    return hooks::sem_post(sem);
+  }
   auto& t = track::get_thread();
   t.write_end_mutex_locked("semaphore", sem);
   t.write_begin(slice_begin_sem_post);
-  if (!hooks::sem_post) hooks::init(hooks::sem_post, __sem_post, "sem_post");
   int result = hooks::sem_post(sem);
   t.write_end();
   return result;
